@@ -1,6 +1,6 @@
 // 分轨DJ 主程序
-import { Engine, toInt16, xfGains, MAX_STEMS } from './engine.js';
-import { groupFiles, modeName, analyzeRhythm, stemPeaks, bandPeaks, toBytes, audibleRange, fmtTime, WAVE_RATE, KIND_MAP } from './analysis.js';
+import { Engine, toInt16, xfGains, MAX_STEMS, unityFaderGain } from './engine.js';
+import { groupFiles, modeName, analyzeRhythm, stemPeaks, bandPeaks, toBytes, audibleRange, fmtTime, WAVE_RATE, KIND_MAP, isAudioFile } from './analysis.js';
 import { lib, uid } from './library.js';
 import { $, $$, h, clamp, Knob, Fader, modal, close as closeModal, confirmBox, promptBox, toast, hideToast, escapeHtml } from './ui.js';
 
@@ -12,8 +12,13 @@ function bestRatio(r) { let best = r; for (const c of [r * 2, r / 2]) if (Math.a
 
 // ---------- 设置 ----------
 const SETTINGS_KEY = 'djmix-settings-v1';
-const settings = Object.assign({ zoom: 3, am: { beats: 16, style: 'auto', match: true }, queue: [] }, (() => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch (e) { return {}; } })());
+const settings = Object.assign({ zoom: 3, snap: true, am: { beats: 16, style: 'auto', match: true }, queue: [] }, (() => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch (e) { return {}; } })());
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {} }
+
+// 暂停时的磁带停止时间（秒）
+const TAPE_STOP = 0.8;
+// 吸附范围（单位：拍）。小节吸附范围大、拍子吸附范围小
+const SNAP = { barEarly: 1.0, barLate: 0.6, beat: 0.22 };
 
 let engine = null;
 let decks = [];
@@ -31,7 +36,7 @@ class Deck {
     this.bpm = 0; this.t0 = 0; this.tempo = 0; this.range = 0.08; this.bend = 0; this.sync = false;
     this.loop = { on: false, beats: 4, s: 0, e: 0 };
     this.cue = 0; this.stems = []; this.view = 'platter';
-    this.trim = 0; this.eq = { hi: 0, mid: 0, lo: 0 }; this.filter = 0; this.fader = 1;
+    this.trim = 0; this.eq = { hi: 0, mid: 0, lo: 0 }; this.filter = 0; this.fader = 0.5;
     this.cuePreview = false; this.cueKeep = false; this.loadToken = 0;
     this.waveScale = 1; this.lastTxt = {}; this.popStem = -1;
     this.build();
@@ -211,7 +216,7 @@ class Deck {
     this.loop.on = false; this.bend = 0; this.cuePreview = false;
     this.audio.setLoop(false, 0, 0);
     const n = Math.min(song.stems.length, MAX_STEMS);
-    this.stems = song.stems.slice(0, n).map((s) => ({ ...s, fader: 1, mute: false, solo: false, eq: { hi: 0, mid: 0, lo: 0 }, filter: 0, eff: 1 }));
+    this.stems = song.stems.slice(0, n).map((s) => ({ ...s, fader: 0.5, mute: false, solo: false, eq: { hi: 0, mid: 0, lo: 0 }, filter: 0, eff: 1 }));
     for (let j = 0; j < MAX_STEMS; j++) {
       const c = this.audio.chains[j];
       c.setAuto(1, 0.01);
@@ -270,7 +275,7 @@ class Deck {
     this.stems.forEach((s, j) => {
       const strip = h('div', { class: 'strip', style: `--c:${s.color}` });
       const meter = h('div', { class: 'smeter' }, h('i'));
-      const fader = new Fader({ orient: 'v', value: 1, def: 1, caps: 38, onChange: (v) => { s.fader = v; this.updateStemGains(); } });
+      const fader = new Fader({ orient: 'v', value: 0.5, def: 0.5, caps: 38, center: true, cls: 'unity', onChange: (v) => { s.fader = v; this.updateStemGains(); } });
       const m = h('button', { class: 'm' }, 'M');
       const so = h('button', { class: 's' }, 'S');
       const eq = h('button', { class: 'seq' }, 'EQ ▾');
@@ -322,17 +327,26 @@ class Deck {
   updateStemGains() {
     if (!this.audio) return;
     const anySolo = this.stems.some((s) => s.solo);
+    let vis = '';
     this.stems.forEach((s, j) => {
-      const g = s.mute ? 0 : (anySolo && !s.solo ? 0 : s.fader);
+      const g = s.mute ? 0 : (anySolo && !s.solo ? 0 : unityFaderGain(s.fader));
       s.eff = g;
-      this.audio.chains[j].setGain(faderGain(g));
+      vis += g > 0 ? '1' : '0';
+      this.audio.chains[j].setGain(g);
       if (s.ui) {
         s.ui.m.classList.toggle('on', s.mute); s.ui.so.classList.toggle('on', s.solo);
         s.ui.strip.classList.toggle('dead', g === 0);
       }
     });
     for (let j = this.stems.length; j < MAX_STEMS; j++) this.audio.chains[j].setGain(0);
-    this.ovDirty = true;
+    // 波形只在某条轨被关掉/打开时才重画（推子拖动时不重画，保持 120 帧）
+    if (vis !== this.visKey) { this.visKey = vis; this.ovDirty = true; }
+  }
+  // 自动混音用：直接移动分轨推子（界面上的推子会跟着动）
+  setStemFader(j, v) {
+    const s = this.stems[j]; if (!s) return;
+    s.fader = clamp(v, 0, 1);
+    if (s.ui) s.ui.fader.set(s.fader);
   }
 
   setView(v) {
@@ -349,12 +363,12 @@ class Deck {
     a.setTrim(Math.pow(10, this.trim * 12 / 20));
     for (const b of ['hi', 'mid', 'lo']) a.fx.setEq(b, this.eq[b]);
     a.fx.setFilter(this.filter);
-    a.setFader(faderGain(this.fader));
+    a.setFader(unityFaderGain(this.fader));
   }
   setEq(band, v) { this.eq[band] = v; if (this.audio) this.audio.fx.setEq(band, v); const k = this.knobs && this.knobs[band]; if (k) { k.set(v); k.el.classList.toggle('kill', v <= -0.97); } }
   setFilter(v) { this.filter = v; if (this.audio) this.audio.fx.setFilter(v); if (this.knobs) this.knobs.filter.set(v); }
   setTrim(v) { this.trim = v; if (this.audio) this.audio.setTrim(Math.pow(10, v * 12 / 20)); if (this.knobs) this.knobs.trim.set(v); }
-  setFader(v) { this.fader = v; if (this.audio) this.audio.setFader(faderGain(v)); if (this.chFader) this.chFader.set(v); }
+  setFader(v) { this.fader = v; if (this.audio) this.audio.setFader(unityFaderGain(v)); if (this.chFader) this.chFader.set(v); }
 
   // ---------- 变速 / 同步 ----------
   applyRate() { if (this.audio) this.audio.setRate(this.rate()); }
@@ -395,21 +409,51 @@ class Deck {
     } else this.sync = false;
     this.updateButtons();
   }
-  // 两个唱盘节拍相位差（返回本唱盘需要移动的秒数）
-  phaseDelta(pa, pb) {
+  // 和另一个唱盘的相位差：eBar 以拍为单位（-2..2，按小节对齐算），eBeat 以拍为单位（-0.5..0.5）
+  phaseErr(pa, t) {
     const o = this.other;
     let perA = this.beatLen(), perB = o.beatLen();
     const k = (perA / this.rate()) / (perB / o.rate());
     if (k > 1.5) perB *= Math.round(k); else if (k < 0.67) perA *= Math.round(1 / k);
-    const d = frac((pb - o.t0) / perB) - frac((pa - this.t0) / perA);
-    return (d - Math.round(d)) * perA;
+    const pb = o.audio.posAt(t);
+    let eBar = frac((pb - o.t0) / (perB * 4)) - frac((pa - this.t0) / (perA * 4));
+    eBar = (eBar - Math.round(eBar)) * 4;
+    let eBeat = frac((pb - o.t0) / perB) - frac((pa - this.t0) / perA);
+    eBeat -= Math.round(eBeat);
+    return { eBar, eBeat, perA, perB };
+  }
+  // 吸附开始：返回 {time, pos}，让这首歌按小节（强吸附）或拍子（弱吸附）和正在放的那首对齐；不需要吸附时返回 null
+  quantStart(p0) {
+    const o = this.other;
+    if (!(settings.snap || this.sync)) return null;
+    if (!o || !o.song || !o.audio.playing || !this.bpm || !o.bpm) return null;
+    const t = engine.ctx.currentTime + 0.03;
+    const { eBar, eBeat, perA, perB } = this.phaseErr(p0, t);
+    let e = null;
+    if (eBar < 0 ? -eBar <= SNAP.barEarly : eBar <= SNAP.barLate) e = eBar;
+    else if (this.sync || Math.abs(eBeat) <= SNAP.beat) e = eBeat;
+    if (e === null) return null;
+    if (e >= 0) return { time: t, pos: p0 + e * perA };          // 按晚了：直接从稍后的位置开始
+    return { time: t + (-e) * perB / o.rate(), pos: p0 };        // 按早了：等到对齐的那一刻再开始
   }
   phaseAlign() {
     if (!this.bpm || !this.other.bpm) return;
     const t = engine.ctx.currentTime;
-    const pa = this.audio.posAt(t), pb = this.other.audio.posAt(t);
-    const d = this.phaseDelta(pa, pb);
-    if (Math.abs(d) > 0.004) this.audio.seek(pa + d);
+    const pa = this.audio.posAt(t);
+    const { eBar, eBeat, perA } = this.phaseErr(pa, t);
+    const e = Math.abs(eBar) <= 1 ? eBar : eBeat;
+    if (Math.abs(e * perA) > 0.004) this.audio.seek(pa + e * perA);
+  }
+  // CUE 点吸附到自己的节拍网格：靠近小节线时吸得远，靠近普通拍子时吸得近
+  snapCue(p) {
+    const bl = this.beatLen();
+    if (!settings.snap || !bl) return p;
+    const bar = bl * 4;
+    const nb = this.t0 + Math.round((p - this.t0) / bar) * bar;
+    if (nb >= 0 && Math.abs(p - nb) <= bl * 0.5) return nb;
+    const b = this.nearestBeat(p);
+    if (Math.abs(p - b) <= bl * 0.2) return b;
+    return p;
   }
 
   // ---------- 走带 ----------
@@ -418,35 +462,33 @@ class Deck {
     t = clamp(t, 0, this.duration);
     this.audio.seek(t);
   }
+  startFrom(p0) {
+    const q = this.quantStart(p0);
+    if (q) { this.audio.startAt(q.time, q.pos); this.audio.rep.playing = true; }
+    else this.audio.play();
+  }
   play() {
     if (!this.song) return;
     wakeLock();
-    const o = this.other;
-    if (this.sync && o.audio.playing && this.bpm && o.bpm) {
-      const t = engine.ctx.currentTime + 0.05;
-      const pa = this.audio.pos(), pb = o.audio.posAt(t);
-      let np = pa + this.phaseDelta(pa, pb);
-      if (np < 0) np += this.beatLen();
-      this.audio.startAt(t, np);
-      this.audio.rep.playing = true;
-    } else this.audio.play();
+    this.startFrom(this.audio.pos());
     this.updateButtons();
   }
-  pause() { this.audio.pause(); this.updateButtons(); }
+  // brake=true：磁带停止效果
+  pause(brake = true) { this.audio.pause(brake ? TAPE_STOP : 0); this.updateButtons(); }
   playPress() {
     if (!this.song) return;
     if (this.cuePreview) { this.cueKeep = true; this.updateButtons(); return; }
-    if (this.audio.playing) this.pause(); else this.play();
+    if (this.audio.playing) this.pause(true); else this.play();
   }
   cueDown() {
     if (!this.song) return;
     if (this.audio.playing && !this.cuePreview) { this.audio.pause(); this.audio.seek(this.cue); this.updateButtons(); return; }
     const p = this.audio.pos();
-    if (Math.abs(p - this.cue) > 0.02) { this.cue = this.bpm ? this.nearestBeatIfClose(p) : p; this.audio.seek(this.cue); this.ovDirty = true; this.updateButtons(); return; }
+    if (Math.abs(p - this.cue) > 0.02) { this.cue = this.snapCue(p); this.audio.seek(this.cue); this.updateButtons(); return; }
     this.cuePreview = true; this.cueKeep = false;
-    this.audio.play(); this.updateButtons();
+    wakeLock();
+    this.startFrom(this.cue); this.updateButtons();
   }
-  nearestBeatIfClose(p) { const b = this.nearestBeat(p); return Math.abs(b - p) < 0.06 ? b : p; }
   cueUp() {
     if (!this.cuePreview) return;
     this.cuePreview = false;
@@ -552,7 +594,7 @@ class Deck {
     const mid = H / 2, half = H / 2 - 1;
     const multi = this.isMulti;
     const cum = new Float32Array(W);
-    const layers = multi ? arrs.map((a, j) => ({ a, color: this.stems[j] ? this.stems[j].color : '#888', g: this.stems[j] ? this.stems[j].eff : 0, sc: this.waveScale }))
+    const layers = multi ? arrs.map((a, j) => ({ a, color: this.stems[j] ? this.stems[j].color : '#888', g: this.stems[j] && this.stems[j].eff > 0 ? 1 : 0, sc: this.waveScale }))
       : [{ a: arrs[0], color: '#2f6bff', g: 1, sc: 1 }, { a: arrs[1], color: '#ff9a3c', g: 0.85, sc: 1, over: true }, { a: arrs[2], color: '#eef2f8', g: 0.55, sc: 1, over: true }];
     for (const L of layers) {
       if (L.g <= 0) continue;
@@ -601,7 +643,7 @@ class Mixer {
         lo: mk('低', 'lo', 0, (v) => d.setEq('lo', v)),
         filter: mk('滤波', 'filter', 0, (v) => d.setFilter(v)),
       };
-      d.chFader = new Fader({ orient: 'v', value: 1, def: 1, caps: 46, onChange: (v) => d.setFader(v) });
+      d.chFader = new Fader({ orient: 'v', value: 0.5, def: 0.5, caps: 46, center: true, cls: 'unity', onChange: (v) => d.setFader(v) });
       const vu = h('div', { class: 'vu' }, h('i'));
       d.vu = vu.firstChild;
       strip.append(h('div', { class: 'chtag' }, d.L), d.knobs.trim.el, d.knobs.hi.el, d.knobs.mid.el, d.knobs.lo.el, d.knobs.filter.el,
@@ -638,11 +680,12 @@ class Mixer {
 // 顶部滚动波形
 // =====================================================================
 const ZOOMS = [35, 55, 80, 115, 165, 240, 340];
+const TILE_W = 512;   // 每块预先画好的波形宽度（像素）
 class Waves {
   constructor() {
     this.c = $('#waveCanvas');
-    this.g = this.c.getContext('2d');
-    this.cols0 = new Int32Array(0); this.cols1 = new Int32Array(0); this.cum = new Float32Array(0);
+    this.g = this.c.getContext('2d', { alpha: false });
+    this.cache = [{ key: '', tiles: new Map() }, { key: '', tiles: new Map() }];
     $('#zoomIn').onclick = () => { settings.zoom = Math.min(ZOOMS.length - 1, settings.zoom + 1); saveSettings(); };
     $('#zoomOut').onclick = () => { settings.zoom = Math.max(0, settings.zoom - 1); saveSettings(); };
     this.bindScratch();
@@ -652,7 +695,6 @@ class Waves {
     const dpr = window.devicePixelRatio || 1;
     this.W = this.c.clientWidth; this.H = this.c.clientHeight; this.dpr = dpr;
     this.c.width = Math.round(this.W * dpr); this.c.height = Math.round(this.H * dpr);
-    this.cols0 = new Int32Array(Math.ceil(this.W) + 2); this.cols1 = new Int32Array(Math.ceil(this.W) + 2); this.cum = new Float32Array(Math.ceil(this.W) + 2);
   }
   // 在波形上左右拖动 = 搓碟
   bindScratch() {
@@ -680,48 +722,52 @@ class Waves {
     const g = this.g, W = this.W, H = this.H;
     g.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
     g.fillStyle = '#05060a'; g.fillRect(0, 0, W, H);
+    this.prefetched = false;
     const lh = (H - 2) / 2;
-    this.lane(decks[0], 0, lh);
-    this.lane(decks[1], lh + 2, lh);
+    this.lane(0, decks[0], 0, lh);
+    this.lane(1, decks[1], lh + 2, lh);
     g.fillStyle = '#1b1f29'; g.fillRect(0, lh, W, 2);
     g.fillStyle = '#fff'; g.fillRect(W / 2 - 1, 0, 2, H);
   }
-  lane(d, y0, LH) {
-    const g = this.g, W = this.W;
-    if (!d || !d.song || !d.wave) return;
-    const pos = d.pos || 0;
-    const spp = d.rate() / this.Z;          // 每个像素多少秒（按真实时间缩放，两边同步时节拍线对齐）
-    const cx = W / 2;
-    const tStart = pos - cx * spp;
-    const R = d.wave.rate || WAVE_RATE;
-    const arrs = d.wave.data;
-    const N = arrs[0].length;
-    const c0 = this.cols0, c1 = this.cols1, cum = this.cum;
-    const cols = Math.ceil(W);
-    for (let x = 0; x < cols; x++) {
-      const t = tStart + x * spp;
-      let i0 = Math.floor(t * R), i1 = Math.floor((t + spp) * R);
-      if (i1 <= i0) i1 = i0 + 1;
-      c0[x] = i0; c1[x] = i1; cum[x] = 0;
+  tileKey(d, LH) {
+    return `${d.song.id}|${this.Z}|${Math.round(LH)}|${this.dpr}|${d.visKey || ''}|${d.waveScale.toFixed(4)}`;
+  }
+  tile(ci, d, i, LH) {
+    const tiles = this.cache[ci].tiles;
+    let t = tiles.get(i);
+    if (t) { tiles.delete(i); tiles.set(i, t); return t; }
+    t = this.renderTile(d, i, LH);
+    tiles.set(i, t);
+    if (tiles.size > 24) tiles.delete(tiles.keys().next().value);
+    return t;
+  }
+  // 把一段波形画到一块小画布上，播放时只需要把这些小画布贴上去（很省）
+  renderTile(d, i, LH) {
+    const dpr = this.dpr, S = this.Z;
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(TILE_W * dpr); cv.height = Math.max(1, Math.round(LH * dpr));
+    const g = cv.getContext('2d');
+    g.scale(dpr, dpr);
+    const R = d.wave.rate || WAVE_RATE, arrs = d.wave.data, N = arrs[0].length;
+    const t0 = i * TILE_W / S, dt = 1 / S;
+    const i0s = new Int32Array(TILE_W), i1s = new Int32Array(TILE_W);
+    for (let x = 0; x < TILE_W; x++) {
+      const t = t0 + x * dt;
+      let a = Math.floor(t * R), b = Math.floor((t + dt) * R);
+      if (b <= a) b = a + 1;
+      i0s[x] = a; i1s[x] = b;
     }
-    const mid = y0 + LH / 2, half = LH / 2 - 2;
-    g.save();
-    g.beginPath(); g.rect(0, y0, W, LH); g.clip();
-    // 循环区域
-    if (d.loop.on) {
-      g.fillStyle = 'rgba(62,224,143,.16)';
-      const xs = cx + (d.loop.s - pos) / spp, xe = cx + (d.loop.e - pos) / spp;
-      g.fillRect(xs, y0, xe - xs, LH);
-    }
-    const peak = (a, x) => { const i0 = c0[x], i1 = c1[x]; if (i0 < 0 || i0 >= N) return 0; let m = 0; for (let i = i0; i < i1 && i < N; i++) if (a[i] > m) m = a[i]; return m; };
+    const peak = (arr, x) => { const a = i0s[x], b = i1s[x]; if (a < 0 || a >= N) return 0; let m = 0; for (let k = a; k < b && k < N; k++) if (arr[k] > m) m = arr[k]; return m; };
+    const mid = LH / 2, half = LH / 2 - 2;
     if (d.isMulti) {
+      const cum = new Float32Array(TILE_W);
       const sc = d.waveScale * half / 255;
       d.stems.forEach((s, j) => {
-        const ga = s.eff; if (ga <= 0 || !arrs[j]) return;
+        if (!(s.eff > 0) || !arrs[j]) return;
         const a = arrs[j];
         g.fillStyle = s.color; g.beginPath();
-        for (let x = 0; x < cols; x++) {
-          const hh = peak(a, x) * sc * ga;
+        for (let x = 0; x < TILE_W; x++) {
+          const hh = peak(a, x) * sc;
           if (hh < 0.3) continue;
           const cu = cum[x];
           g.rect(x, mid - cu - hh, 1, hh); g.rect(x, mid + cu, 1, hh);
@@ -734,17 +780,47 @@ class Waves {
       for (const [a, col, f] of sets) {
         g.fillStyle = col; g.beginPath();
         const sc = half / 255 * f;
-        for (let x = 0; x < cols; x++) { const hh = peak(a, x) * sc; if (hh > 0.3) g.rect(x, mid - hh, 1, hh * 2); }
+        for (let x = 0; x < TILE_W; x++) { const hh = peak(a, x) * sc; if (hh > 0.3) g.rect(x, mid - hh, 1, hh * 2); }
         g.fill();
       }
     }
-    // 已播放部分压暗
+    return cv;
+  }
+  lane(ci, d, y0, LH) {
+    const g = this.g, W = this.W;
+    if (!d || !d.song || !d.wave) return;
+    const cache = this.cache[ci];
+    const key = this.tileKey(d, LH);
+    if (cache.key !== key) { cache.key = key; cache.tiles.clear(); }
+    const pos = d.pos || 0;
+    const rate = d.rate() || 1;
+    const spp = rate / this.Z;          // 每个屏幕像素多少秒（按真实时间缩放，两边同步时节拍线对齐）
+    const cx = W / 2;
+    const tStart = pos - cx * spp, tEnd = pos + (W - cx) * spp;
+    const tileSec = TILE_W / this.Z;
+    const dur = d.duration;
+    g.save();
+    g.beginPath(); g.rect(0, y0, W, LH); g.clip();
+    if (d.loop.on) {
+      g.fillStyle = 'rgba(62,224,143,.16)';
+      const xs = cx + (d.loop.s - pos) / spp, xe = cx + (d.loop.e - pos) / spp;
+      g.fillRect(xs, y0, xe - xs, LH);
+    }
+    const tw = TILE_W / rate;
+    for (let i = Math.max(0, Math.floor(tStart / tileSec)); i * tileSec < tEnd && i * tileSec < dur; i++) {
+      const x = cx + (i * tileSec - pos) / spp;
+      g.drawImage(this.tile(ci, d, i, LH), x, y0, tw + 0.5, LH);
+    }
+    // 提前画好下一块，播放时不卡
+    if (!this.prefetched) {
+      const nx = Math.floor(tEnd / tileSec) + 1;
+      if (nx * tileSec < dur && !cache.tiles.has(nx)) { this.tile(ci, d, nx, LH); this.prefetched = true; }
+    }
     g.fillStyle = 'rgba(5,6,10,.38)'; g.fillRect(0, y0, cx, LH);
-    // 节拍网格
     const bl = d.beatLen();
     if (bl) {
       const pxBeat = bl / spp;
-      const n0 = Math.ceil((tStart - d.t0) / bl), tEnd = tStart + W * spp;
+      const n0 = Math.ceil((tStart - d.t0) / bl);
       for (let n = n0; d.t0 + n * bl <= tEnd; n++) {
         const isBar = ((n % 4) + 4) % 4 === 0;
         if (!isBar && pxBeat < 7) continue;
@@ -754,11 +830,9 @@ class Waves {
         if (!isBar) g.fillRect(Math.round(x), y0 + LH * 0.78, 1, LH * 0.22);
       }
     }
-    // CUE 点
     const xc = cx + (d.cue - pos) / spp;
     if (xc > -10 && xc < W + 10) { g.fillStyle = '#ffcc33'; g.beginPath(); g.moveTo(xc - 6, y0); g.lineTo(xc + 6, y0); g.lineTo(xc, y0 + 9); g.fill(); }
     g.restore();
-    // 左边的唱盘颜色条
     g.fillStyle = d.i ? '#ff8a3d' : '#2ad4ff'; g.fillRect(0, y0, 3, LH);
   }
 }
@@ -805,11 +879,12 @@ function renderSheet() {
   const foot = $('#sfoot');
   $('#search').style.display = sheetTab === 'lib' ? '' : 'none';
   $('#btnImport').style.display = sheetTab === 'lib' ? '' : 'none';
+  $('#btnImportDir').style.display = sheetTab === 'lib' ? '' : 'none';
   if (sheetTab === 'lib') {
     const q = $('#search').value.trim().toLowerCase();
     const list = songs.filter((s) => !q || s.title.toLowerCase().includes(q));
     if (!songs.length) {
-      body.append(h('div', { class: 'emptylib', html: '曲库是空的。<br>点右上角「＋ 导入音频」，在「文件」里一次多选分好轨的音频（也可以是普通整首歌）。<br>软件会按文件名自动认出每一轨，并把同一首歌的分轨归到一起。<br><span style="color:#5d6577">支持 wav / mp3 / flac（m4a 也可以试试）</span>' }));
+      body.append(h('div', { class: 'emptylib', html: '曲库是空的。<br>点右上角「＋ 导入文件夹」直接选一整个文件夹（里面的子文件夹也会一起导入），或者用「＋ 导入文件」多选几个文件。<br>软件会按文件名和文件夹名自动认出每一轨，并把同一首歌的分轨归到一起。<br><span style="color:#5d6577">支持 wav / mp3 / flac（m4a 也可以试试）</span>' }));
     }
     for (const s of list) {
       const row = h('div', { class: 'row' });
@@ -897,31 +972,40 @@ async function loadSong(deck, id, { force = false } = {}) {
 // ---------- 导入 ----------
 async function onFiles(fileList) {
   if (!engine) return;
-  const files = [...fileList].filter((f) => /\.(wav|wave|mp3|flac|m4a|aac|aif|aiff|ogg|opus)$/i.test(f.name) || (f.type || '').startsWith('audio'));
-  if (!files.length) { toast('没有可以导入的音频文件'); return; }
+  const all = [...fileList];
+  const files = all.filter(isAudioFile);
+  if (!files.length) { toast(all.length ? '这个文件夹里没有可以导入的音频（支持 wav / mp3 / flac）' : '没有选到文件'); return; }
   const groups = groupFiles(files);
+  // 已经在曲库里的（歌名和文件名都一样）就跳过
+  const sig = (title, names) => title.trim().toLowerCase() + '|' + names.map((x) => x.toLowerCase()).sort().join('|');
+  const have = new Set(songs.map((x) => sig(x.title, x.stems.map((st) => st.name || ''))));
+  for (const g of groups) g.dup = have.has(sig(g.title, g.items.map((it) => it.file.name)));
+  const todo = groups.filter((g) => !g.dup);
   const box = h('div');
   const multiN = groups.filter((g) => g.type === 'multi').length;
-  box.append(h('p', { style: 'color:var(--dim)' }, `一共 ${files.length} 个文件，识别成 ${groups.length} 首歌（${multiN} 首多音轨，${groups.length - multiN} 首单曲）：`));
+  const dupN = groups.length - todo.length;
+  const folders = new Set(files.map((f) => (f.webkitRelativePath || '').split('/').slice(0, -1).join('/')).filter(Boolean));
+  box.append(h('p', { style: 'color:var(--dim)' }, `一共 ${files.length} 个音频${folders.size ? `（来自 ${folders.size} 个文件夹）` : ''}，识别成 ${groups.length} 首歌：${multiN} 首多音轨，${groups.length - multiN} 首单曲${dupN ? `；其中 ${dupN} 首已经在曲库里，会跳过` : ''}。`));
   for (const g of groups) {
     const chips = h('div', { class: 'chips' });
     for (const it of g.items) chips.append(h('span', { class: 'chip', style: `--c:${it.color}` }, it.label));
-    box.append(h('div', { class: 'prev-song' }, h('div', { class: 'pt' }, g.title), h('div', { style: 'font-size:12px;color:var(--dim)' }, g.type === 'multi' ? '多音轨 · ' + modeName(g.items.map((x) => ({ kind: x.kind }))) : '单曲'), chips));
+    box.append(h('div', { class: 'prev-song', style: g.dup ? 'opacity:.45' : '' }, h('div', { class: 'pt' }, g.title + (g.dup ? '（已在曲库）' : '')), h('div', { style: 'font-size:12px;color:var(--dim)' }, g.type === 'multi' ? '多音轨 · ' + modeName(g.items.map((x) => ({ kind: x.kind }))) : '单曲'), chips));
   }
-  const ok = await modal({ title: '导入预览', body: box, wide: true, buttons: [{ label: '取消', value: false }, { label: `导入 ${groups.length} 首`, value: true, primary: true }] });
+  if (!todo.length) { await modal({ title: '导入预览', body: box, wide: true, buttons: [{ label: '好', value: true, primary: true }] }); return; }
+  const ok = await modal({ title: '导入预览', body: box, wide: true, buttons: [{ label: '取消', value: false }, { label: `导入 ${todo.length} 首`, value: true, primary: true }] });
   if (!ok) return;
   await lib.persist();
   let n = 0; const fails = [];
-  for (const g of groups) {
+  for (const g of todo) {
     n++;
-    const pre = `导入 ${n}/${groups.length}：${g.title}`;
+    const pre = `导入 ${n}/${todo.length}：${g.title}`;
     try { await importOne(g, (m) => toast(`${pre} · ${m}`, 0)); }
     catch (e) { console.error(e); fails.push(`${g.title}：${e.message || e}`); }
   }
   hideToast();
   await refreshSongs();
   if (fails.length) modal({ title: '有些歌没导入成功', body: '<p>' + fails.map(escapeHtml).join('<br>') + '</p>' });
-  else toast(`导入完成：${groups.length} 首`);
+  else toast(`导入完成：${todo.length} 首`);
 }
 
 async function importOne(g, progress) {
@@ -1133,6 +1217,9 @@ function amSchedule() {
   }
   const intro = matched ? inc.barIntro() : inc.introPoint();
   const delay = intro < 0 ? -intro / inc.rate() : 0;
+  // 记下过渡开始前各推子的位置，过渡时从这里动
+  am.tr.stemBase = decks.map((d) => d.stems.map((x) => x.fader));
+  am.tr.chBase = decks.map((d) => d.fader);
   amApply(0);
   inc.audio.startAt(t + delay, Math.max(0, intro));
   inc.audio.rep.playing = true;
@@ -1150,19 +1237,24 @@ function amApply(p) {
   else if (style === 'eq') { setA(p); bassSwap(); }
   else if (style === 'filter') { setA(p); out.setFilter(ramp(p, 0.3, 1) * 0.85); }
   else {
-    // 分轨渐入：两边都开着，用每条分轨的音量做过渡
+    // 分轨渐入：两边都开着，直接推动每条分轨的推子做过渡（界面上的推子会跟着动）
     setA(p < 0.85 ? 0.5 : 0.5 + ramp(p, 0.85, 1) * 0.5);
+    const tr = am.tr;
     for (const [d, isIn] of [[out, false], [inc, true]]) {
       if (d.isMulti) {
+        const base = (tr.stemBase && tr.stemBase[d.i]) || [];
         d.stems.forEach((s, j) => {
           const role = (KIND_MAP[s.kind] && KIND_MAP[s.kind].role) || 'music';
           let g;
           if (isIn) g = role === 'drums' ? ramp(p, 0, 0.25) : role === 'inst' ? ramp(p, 0, 0.35) : role === 'bass' ? ramp(p, 0.45, 0.55) : role === 'vox' ? ramp(p, 0.7, 0.9) : ramp(p, 0.25, 0.6);
           else g = 1 - (role === 'vox' ? ramp(p, 0, 0.25) : role === 'music' ? ramp(p, 0.4, 0.75) : role === 'bass' ? ramp(p, 0.45, 0.55) : role === 'inst' ? ramp(p, 0.6, 0.95) : ramp(p, 0.75, 1));
-          d.audio.chains[j].setAuto(g);
+          d.setStemFader(j, (base[j] !== undefined ? base[j] : 0.5) * g);
         });
+        d.updateStemGains();
       } else {
-        d.audio.chains[0].setAuto(isIn ? ramp(p, 0, 0.5) : 1 - ramp(p, 0.5, 1));
+        // 普通整首歌没有分轨推子：推它的总控推子
+        const base = tr.chBase ? tr.chBase[d.i] : 0.5;
+        d.setFader(base * (isIn ? ramp(p, 0, 0.5) : 1 - ramp(p, 0.5, 1)));
         if (isIn) d.setEq('lo', -1 + ramp(p, 0.45, 0.55)); else d.setEq('lo', -ramp(p, 0.45, 0.55));
       }
     }
@@ -1171,8 +1263,10 @@ function amApply(p) {
 
 function amFinish() {
   const out = decks[am.cur], inc = decks[1 - am.cur];
-  out.pause();
+  out.pause(false);
   amResetAuto(out); amResetAuto(inc);
+  // 普通整首歌被推下去的总控推子，换歌前放回原位
+  if (am.tr && am.tr.chBase && !out.isMulti && (am.tr.style === 'stems')) out.setFader(am.tr.chBase[out.i]);
   out.setEq('lo', 0); out.setFilter(0); inc.setEq('lo', 0); inc.setFilter(0);
   mixer.setXf(am.cur === 0 ? 1 : 0);
   if (am.tr && am.tr.matched && Math.abs(inc.tempo) > 0.0005) am.glide = { deck: inc, from: inc.tempo, t: performance.now() };
@@ -1252,11 +1346,14 @@ function renderBpmPop() {
     if (taps.length >= 4) { const iv = (taps[taps.length - 1] - taps[0]) / (taps.length - 1); change(60000 / iv); }
     else { tap.textContent = `TAP ${taps.length}`; }
   });
+  const tapCell = h('div', { style: 'grid-column:span 2;display:grid' }, tap);
   pop.append(h('div', { class: 'bt' }, h('span', {}, `唱盘 ${d.L} · 原速 ${d.bpm ? d.bpm.toFixed(2) : '—'} BPM`), btn('✕', () => { pop.classList.remove('show'); bpmDeck = null; })),
-    h('div', { class: 'g' }, btn('÷2', () => change(d.bpm / 2)), btn('×2', () => change(d.bpm * 2)), btn('−0.1', () => change(d.bpm - 0.1)), btn('+0.1', () => change(d.bpm + 0.1)),
-      btn('网格◀', () => change(undefined, d.t0 - 0.01)), btn('网格▶', () => change(undefined, d.t0 + 0.01)), btn('重拍◀', () => change(undefined, d.t0 - bl)), btn('重拍▶', () => change(undefined, d.t0 + bl))),
-    h('div', { class: 'g', style: 'grid-template-columns:1fr' }, tap),
-    h('div', { class: 'hint' }, '测得不准时在这里改，会自动保存到曲库。<br>「网格」把节拍线前后挪一点（10 毫秒）；「重拍」把小节第一拍挪一拍；TAP 跟着节奏连续点 4 下以上。'));
+    h('div', { class: 'glab' }, '速度'),
+    h('div', { class: 'g' }, btn('÷2', () => change(d.bpm / 2)), btn('×2', () => change(d.bpm * 2)), btn('−0.1', () => change(d.bpm - 0.1)), btn('+0.1', () => change(d.bpm + 0.1))),
+    h('div', { class: 'glab' }, '节拍网格（往前 / 往后挪）'),
+    h('div', { class: 'g' }, btn('◀◀', () => change(undefined, d.t0 - bl / 8)), btn('◀', () => change(undefined, d.t0 - bl / 32)), btn('▶', () => change(undefined, d.t0 + bl / 32)), btn('▶▶', () => change(undefined, d.t0 + bl / 8))),
+    h('div', { class: 'g' }, btn('重拍◀', () => change(undefined, d.t0 - bl)), btn('重拍▶', () => change(undefined, d.t0 + bl)), tapCell),
+    h('div', { class: 'hint' }, '改完自动保存到曲库。◀◀ ▶▶ 一次挪 1/8 拍，◀ ▶ 一次挪 1/32 拍；「重拍」把小节第一拍挪一拍；TAP 跟着节奏连续点 4 下以上。'));
 }
 
 // =====================================================================
@@ -1275,7 +1372,12 @@ function buildStatic() {
   $('#sheetClose').onclick = closeSheet;
   for (const b of $$('#sheetTabs button')) b.onclick = () => openSheet(b.dataset.t, sheetTarget);
   $('#search').addEventListener('input', () => renderSheet());
-  $('#fileIn').addEventListener('change', (e) => { const f = e.target.files; const arr = f ? [...f] : []; e.target.value = ''; if (arr.length) onFiles(arr); });
+  for (const id of ['#fileIn', '#dirIn']) $(id).addEventListener('change', (e) => { const f = e.target.files; const arr = f ? [...f] : []; e.target.value = ''; if (arr.length) onFiles(arr); });
+  // 吸附开关
+  const sb = $('#btnSnap');
+  const updSnap = () => sb.classList.toggle('on', !!settings.snap);
+  updSnap();
+  sb.onclick = () => { settings.snap = !settings.snap; saveSettings(); updSnap(); toast(settings.snap ? '吸附已打开：CUE 和播放会对齐到拍子 / 小节' : '吸附已关闭'); };
   $('#btnAm').onclick = () => (am.on ? amStop('已停止自动混音') : amStart());
   $('#btnAmNext').onclick = amSkip;
   $('#modal').addEventListener('pointerdown', (e) => { if (e.target.id === 'modal') closeModal(null); });
@@ -1324,18 +1426,30 @@ function checkCtx() {
   $('#resume').classList.toggle('show', engine.ctx.state !== 'running' && !document.hidden);
 }
 
-let frameN = 0, lastFrameT = 0;
+// 音频时钟是一小块一小块跳的，画面用平滑后的时钟，120 帧下滚动才顺
+let clkT = 0, clkP = 0;
+function audioNow() {
+  const actx = engine.ctx.currentTime, perf = performance.now() / 1000;
+  if (!clkP || engine.ctx.state !== 'running') { clkT = actx; clkP = perf; return actx; }
+  let est = clkT + (perf - clkP);
+  const err = actx - est;
+  if (Math.abs(err) > 0.05) est = actx; else est += err * 0.1;
+  clkT = est; clkP = perf;
+  return est;
+}
+
+let frameN = 0;
+const fps = { n: 0, t: 0, v: 0 };
 function loop(t) {
   requestAnimationFrame(loop);
-  // 高刷屏上限制到 60 帧左右，省电
-  if (t - lastFrameT < 14) return;
-  lastFrameT = t;
-  const now = engine.ctx.currentTime;
+  const now = audioNow() - (engine.ctx.outputLatency || 0);
   for (const d of decks) d.frame(now);
   waves.draw();
   if ((frameN++ & 1) === 0) { mixer.meters(); for (const d of decks) d.meters(); }
+  fps.n++;
+  if (t - fps.t >= 1000) { fps.v = Math.round(fps.n * 1000 / (t - fps.t)); fps.n = 0; fps.t = t; const e = $('#fps'); if (e) e.textContent = fps.v + ' FPS'; }
 }
 
 buildStatic();
 $('#startBtn').onclick = start;
-window.__dj = { decks: () => decks, engine: () => engine, am, lib, settings, loadSong, onFiles, amStart, amSkip, refreshSongs };
+window.__dj = { decks: () => decks, engine: () => engine, waves: () => waves, mixer: () => mixer, am, lib, settings, loadSong, onFiles, amStart, amSkip, refreshSongs };

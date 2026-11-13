@@ -86,6 +86,12 @@ export class Fader {
     Object.assign(this, { orient, value, def, min, max, onChange, caps, sens });
     this.el = h('div', { class: `fader ${orient} ${cls}`, style: `--cap:${caps}px` },
       h('div', { class: 'fscale' }), center ? h('div', { class: 'fcenter' }) : null, h('div', { class: 'ftrack' }), h('div', { class: 'ffill' }), h('div', { class: 'fcap' }));
+    this.cap = this.el.querySelector('.fcap');
+    this.span = 0;
+    // 推子帽用 transform 移动（显卡合成，不触发重新排版，拖动更顺）
+    if (window.ResizeObserver) {
+      new ResizeObserver(() => { this.measure(); this.draw(); }).observe(this.el);
+    }
     const st = {};
     let s0 = 0, v0 = 0, id = null, span = 1;
     this.el.addEventListener('pointerdown', (e) => {
@@ -94,6 +100,7 @@ export class Fader {
       id = e.pointerId;
       const r = this.el.getBoundingClientRect();
       span = Math.max(20, (this.orient === 'v' ? r.height : r.width) - this.caps);
+      this.span = span;
       s0 = this.orient === 'v' ? e.clientY : e.clientX; v0 = this.value;
       try { this.el.setPointerCapture(id); } catch (_) {}
       this.el.classList.add('active');
@@ -114,9 +121,15 @@ export class Fader {
     this.value = v; this.draw();
     if (emit && this.onChange) this.onChange(v);
   }
+  measure() {
+    const sz = this.orient === 'v' ? this.el.clientHeight : this.el.clientWidth;
+    if (sz > 0) this.span = Math.max(0, sz - this.caps);
+  }
   draw() {
     const p = (this.value - this.min) / (this.max - this.min);
-    this.el.style.setProperty('--p', p.toFixed(4));
+    if (!this.span) this.measure();
+    const px = this.orient === 'v' ? (1 - p) * this.span : p * this.span;
+    this.cap.style.transform = this.orient === 'v' ? `translate3d(0,${px.toFixed(2)}px,0)` : `translate3d(${px.toFixed(2)}px,0,0)`;
   }
 }
 

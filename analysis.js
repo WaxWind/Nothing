@@ -71,23 +71,53 @@ export function parseStemName(filename) {
   return { base, stem: best.kind, key: normKey(title), title };
 }
 
-// 把一批文件分组成歌曲
+// 文件在文件夹里的相对路径（选整个文件夹导入时才有）
+function relDir(file) {
+  const rel = file.webkitRelativePath || file.relPath || '';
+  const parts = rel.split('/').filter(Boolean);
+  parts.pop();
+  return parts;
+}
+
+// 把一批文件分组成歌曲（支持整个文件夹、子文件夹）
+// 规则：
+//  · 同一个文件夹里、歌名部分相同的分轨 → 一首歌
+//  · 文件名只有轨道名（如 vocals.wav）→ 用所在文件夹的名字当歌名
+//  · 文件夹本身叫 vocals / drums 之类（每种轨一个文件夹）→ 按文件名把不同文件夹里的同名文件拼成一首歌
 // 返回 [{title, type:'single'|'multi', items:[{file, kind, label, color}]}]
 export function groupFiles(files) {
-  const parsed = files.map((file) => ({ file, ...parseStemName(file.name) }));
+  const parsed = files.map((file) => {
+    const dirs = relDir(file);
+    const dirName = dirs.length ? dirs[dirs.length - 1] : '';
+    let p = parseStemName(file.name);
+    let scope = dirs.join('/');
+    if (!p.stem && dirName) {
+      const d = parseStemName(dirName);
+      if (d.stem && !d.title) {
+        const t = cleanTitle(p.base) || p.base;
+        p = { base: p.base, stem: d.stem, key: normKey(t), title: t, fromDir: true };
+        scope = dirs.slice(0, -1).join('/');
+      }
+    }
+    if (p.stem && !p.title && dirName) { p.title = cleanTitle(dirName) || dirName; p.key = normKey(p.title); }
+    return { file, ...p, scope };
+  });
   const groups = new Map();
   const singles = [];
   for (const p of parsed) {
     if (!p.stem) { singles.push(p); continue; }
-    if (!groups.has(p.key)) groups.set(p.key, { title: p.title, items: [] });
-    groups.get(p.key).items.push(p);
+    const gk = p.scope + '|' + p.key;
+    if (!groups.has(gk)) groups.set(gk, { title: p.title, scope: p.scope, key: p.key, items: [] });
+    groups.get(gk).items.push(p);
   }
-  // 认不出种类的文件：如果开头和某首多轨歌一样，就当这首歌的一条自定义分轨
+  // 认不出种类的文件：如果开头和同一文件夹里某首多轨歌一样，就当这首歌的一条自定义分轨
   const rest = [];
   for (const p of singles) {
     const t = normKey(cleanTitle(p.base));
     let attached = false;
-    for (const [k, g] of groups) {
+    for (const [, g] of groups) {
+      if (g.scope !== p.scope) continue;
+      const k = g.key;
       if (k && t.startsWith(k) && t.length > k.length) {
         const label = cleanTitle(cleanTitle(p.base).slice(g.title.length)) || p.base;
         if (label.length <= 24) { g.items.push({ ...p, stem: 'custom', customLabel: label }); attached = true; break; }
@@ -95,33 +125,36 @@ export function groupFiles(files) {
     }
     if (!attached) rest.push(p);
   }
-  // 剩下的：按最后一个下划线前面的部分分组，两个以上同名开头的当成多轨
+  // 剩下的：同一文件夹里按最后一个下划线前面的部分分组，两个以上同名开头的当成多轨
   const byPrefix = new Map();
+  let uniq = 0;
   for (const p of rest) {
     const i = p.base.lastIndexOf('_');
     if (i > 0 && i < p.base.length - 1) {
-      const k = normKey(cleanTitle(p.base.slice(0, i)));
+      const k = p.scope + '|' + normKey(cleanTitle(p.base.slice(0, i)));
       if (!byPrefix.has(k)) byPrefix.set(k, []);
       byPrefix.get(k).push(p);
     } else {
-      byPrefix.set('\u0000' + p.base + Math.random(), [p]);
+      byPrefix.set('\u0000' + (uniq++), [p]);
     }
   }
   const out = [];
+  const singleOf = (p) => ({ title: cleanTitle(p.base) || p.base, type: 'single', items: [{ file: p.file, kind: 'mix', label: '整轨', color: '#5fd4ff' }] });
   for (const [k, arr] of byPrefix) {
     if (arr.length >= 2 && !k.startsWith('\u0000')) {
       const title = cleanTitle(arr[0].base.slice(0, arr[0].base.lastIndexOf('_')));
-      if (!groups.has(k)) groups.set(k, { title, items: [] });
-      for (const p of arr) groups.get(k).items.push({ ...p, stem: 'custom', customLabel: cleanTitle(p.base.slice(p.base.lastIndexOf('_') + 1)) });
+      const gk = arr[0].scope + '|' + normKey(title);
+      if (!groups.has(gk)) groups.set(gk, { title, scope: arr[0].scope, key: normKey(title), items: [] });
+      for (const p of arr) groups.get(gk).items.push({ ...p, stem: 'custom', customLabel: cleanTitle(p.base.slice(p.base.lastIndexOf('_') + 1)) });
     } else {
-      for (const p of arr) out.push({ title: cleanTitle(p.base) || p.base, type: 'single', items: [{ file: p.file, kind: 'mix', label: '整轨', color: '#5fd4ff' }] });
+      for (const p of arr) out.push(singleOf(p));
     }
   }
   for (const [, g] of groups) {
     if (g.items.length === 1) {
       // 只有一个文件：当普通歌曲
       const p = g.items[0];
-      out.push({ title: cleanTitle(p.base) || p.base, type: 'single', items: [{ file: p.file, kind: 'mix', label: '整轨', color: '#5fd4ff' }] });
+      out.push(p.fromDir ? { title: g.title, type: 'single', items: [{ file: p.file, kind: 'mix', label: '整轨', color: '#5fd4ff' }] } : singleOf(p));
       continue;
     }
     g.items.sort((a, b) => (KIND_MAP[a.stem].order - KIND_MAP[b.stem].order) || a.base.localeCompare(b.base));
@@ -137,7 +170,16 @@ export function groupFiles(files) {
     });
     out.push({ title: g.title || '未命名歌曲', type: 'multi', items });
   }
+  out.sort((a, b) => a.title.localeCompare(b.title, 'zh'));
   return out;
+}
+
+// 只保留音频文件（跳过隐藏文件、图片、文本等）
+export const AUDIO_EXT = /\.(wav|wave|mp3|flac|m4a|aac|aif|aiff|ogg|opus|caf)$/i;
+export function isAudioFile(f) {
+  const n = f.name || '';
+  if (n.startsWith('.') || n.startsWith('._')) return false;
+  return AUDIO_EXT.test(n) || ((f.type || '').startsWith('audio') && !/\.(txt|json|jpg|png)$/i.test(n));
 }
 
 // 根据分轨组合给出模式名

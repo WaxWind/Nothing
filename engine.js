@@ -94,7 +94,7 @@ export class DeckAudio {
   }
   unload() { this.post({ cmd: 'unload' }); this.rep = { pos: 0, time: this.ctx.currentTime, v: 0, playing: false, len: 0 }; }
   play() { this.post({ cmd: 'play' }); this.rep.playing = true; }
-  pause() { this.post({ cmd: 'pause' }); this.rep.playing = false; }
+  pause(brake = 0) { this.post({ cmd: 'pause', brake }); this.rep.playing = false; }
   seek(sec) {
     const p = Math.max(0, sec * this.sr);
     this.post({ cmd: 'seek', pos: p });
@@ -163,6 +163,15 @@ export function toInt16(buf) {
   const d = new Int16Array(len);
   for (let i = 0; i < len; i++) { const m = M[i] * 32767; d[i] = m > 32767 ? 32767 : m < -32768 ? -32768 : m; }
   return { d, ch: 1, len };
+}
+
+// 推子位置 0..1 → 增益：正中间 = 原音量（0 dB），最上面 +10 dB，往下逐渐到静音
+export const FADER_TOP_DB = 10;
+export function unityFaderGain(v) {
+  if (v <= 0) return 0;
+  if (v >= 0.5) return Math.pow(10, ((v - 0.5) / 0.5) * FADER_TOP_DB / 20);
+  const x = v / 0.5;
+  return x * x;
 }
 
 // 交叉推子曲线：x=0 只有 A，x=1 只有 B，中间两边都是满音量

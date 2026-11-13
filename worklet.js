@@ -17,6 +17,7 @@ class DeckProcessor extends AudioWorkletProcessor {
     this.env = 0;         // 防爆音包络
     this.pendingSeek = null;
     this.startAt = null;  // {time, pos}
+    this.brake = null;    // 磁带停止：{v0, n, N}
     this.blockCount = 0;
     this.endedSent = false;
     this.port.onmessage = (e) => this.onMsg(e.data);
@@ -29,7 +30,7 @@ class DeckProcessor extends AudioWorkletProcessor {
         this.len = 0;
         for (const s of this.stems) this.len = Math.max(this.len, s.len);
         this.pos = m.pos || 0; this.v = 0; this.playing = false; this.scratch = false;
-        this.loopOn = false; this.pendingSeek = null; this.startAt = null; this.env = 0;
+        this.loopOn = false; this.pendingSeek = null; this.startAt = null; this.env = 0; this.brake = null;
         this.endedSent = false;
         this.report(true);
         break;
@@ -38,10 +39,14 @@ class DeckProcessor extends AudioWorkletProcessor {
         this.report(true);
         break;
       case 'play':
-        if (this.len) { this.playing = true; this.endedSent = false; if (this.pos >= this.len - 1) this.pos = 0; }
-        this.startAt = null;
+        // 直接全速开始，不要 tape start
+        if (this.len) { this.playing = true; this.endedSent = false; if (this.pos >= this.len - 1) this.pos = 0; this.v = this.rate; }
+        this.startAt = null; this.brake = null;
         break;
       case 'pause':
+        // brake > 0：磁带停止效果（速度在 brake 秒内慢慢降到 0，音调跟着往下掉）
+        if (m.brake > 0 && this.playing && Math.abs(this.v) > 0.05) this.brake = { v0: this.v, n: 0, N: Math.max(1, m.brake * sampleRate) };
+        else this.brake = null;
         this.playing = false; this.startAt = null;
         break;
       case 'seek':
@@ -51,7 +56,7 @@ class DeckProcessor extends AudioWorkletProcessor {
         this.rate = m.v;
         break;
       case 'scratch':
-        if (m.on && !this.scratch) { this.scratchTarget = this.pos; }
+        if (m.on && !this.scratch) { this.scratchTarget = this.pos; this.brake = null; }
         this.scratch = !!m.on;
         if (m.target !== undefined) this.scratchTarget = m.target;
         break;
@@ -63,7 +68,7 @@ class DeckProcessor extends AudioWorkletProcessor {
         break;
       case 'startAt':
         // 在指定的音频时间点从指定位置开始播放（自动混音/同步起播用，精确到采样）
-        this.startAt = { time: m.time, pos: m.pos };
+        this.startAt = { time: m.time, pos: m.pos }; this.brake = null;
         break;
     }
   }
@@ -122,13 +127,17 @@ class DeckProcessor extends AudioWorkletProcessor {
       }
       // 速度平滑
       let target, k;
-      if (this.scratch) { target = scratchVel; k = kFast; }
-      else if (this.playing) { target = this.rate; k = (Math.abs(v) > 3 || v < 0) ? kRelease : kNorm; }
-      else { target = 0; k = kNorm; }
-      v += (target - v) * k;
+      if (this.scratch) { target = scratchVel; k = kFast; v += (target - v) * k; }
+      else if (this.playing) { target = this.rate; k = (Math.abs(v) > 3 || v < 0) ? kRelease : kNorm; v += (target - v) * k; }
+      else if (this.brake) {
+        const b = this.brake, x = b.n++ / b.N;
+        if (x >= 1) { v = 0; this.brake = null; }
+        else v = b.v0 * Math.pow(1 - x, 1.6);
+      }
+      else { target = 0; k = kNorm; v += (target - v) * k; }
 
       // 防爆音包络
-      const audible = (this.playing || this.scratch || Math.abs(v) > 0.002) && this.pendingSeek === null;
+      const audible = (this.playing || this.scratch || this.brake || Math.abs(v) > 0.002) && this.pendingSeek === null;
       if (audible) { if (env < 1) env = Math.min(1, env + envStep); }
       else if (env > 0) env = Math.max(0, env - envStep);
       if (this.pendingSeek !== null && env <= 0) { pos = this.pendingSeek; this.pendingSeek = null; }

@@ -133,7 +133,7 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) minmax
 .platter{position:absolute;left:0;top:0;height:100%;aspect-ratio:1/1;border-radius:50%;touch-action:none;
   background:conic-gradient(from 0deg,#8f9399,#45474c 12%,#c3c6cb 25%,#4a4c51 38%,#9da0a6 50%,#3f4146 63%,#b8bbc0 76%,#47494e 88%,#8f9399);
   box-shadow:0 14px 34px rgba(0,0,0,.75),0 0 0 1px #000,inset 0 0 0 1px rgba(255,255,255,.25)}
-.platter .spin{position:absolute;inset:0;border-radius:50%}
+.platter .spin{position:absolute;inset:0;border-radius:50%;will-change:transform;transform:translateZ(0)}
 .platter .dots{position:absolute;inset:0;border-radius:50%;background:repeating-conic-gradient(from 0deg,#e6e8eb 0 1.1deg,transparent 1.1deg 4deg);
   -webkit-mask:radial-gradient(circle,transparent 0 92.2%,#000 92.6% 95.4%,transparent 95.8%);mask:radial-gradient(circle,transparent 0 92.2%,#000 92.6% 95.4%,transparent 95.8%);opacity:.75}
 .platter .vinyl{position:absolute;inset:6%;border-radius:50%;
@@ -266,15 +266,17 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) minmax
 .fader .ffill{display:none}
 .fader .fcenter{position:absolute;background:var(--silk)}
 .fader.v .fcenter{left:calc(50% - 20px);right:calc(50% - 20px);height:2px;top:calc(50% - 1px)}
+.fader.unity .fcenter{left:calc(50% - 19px);right:calc(50% - 19px);background:#d9dde4}
+.fader.unity .fcenter::after{content:"0";position:absolute;left:-9px;top:-6px;font-size:9px;color:var(--silk);font-family:var(--mono)}
 .fader.h .fcenter{top:calc(50% - 16px);bottom:calc(50% - 16px);width:2px;left:calc(50% - 1px)}
 .fader .fcap{position:absolute;border-radius:3px;
   background:repeating-linear-gradient(180deg,rgba(255,255,255,.07) 0 1px,transparent 1px 4px),
     linear-gradient(180deg,#5a5d62 0%,#33353a 14%,#1e1f22 48%,#2b2d31 86%,#45474c 100%);
   box-shadow:0 5px 9px rgba(0,0,0,.75),0 0 0 1px #000,inset 0 1px 0 rgba(255,255,255,.18)}
 .fader .fcap::after{content:"";position:absolute;background:#f2f3f5;box-shadow:0 0 3px rgba(255,255,255,.35)}
-.fader.v .fcap{left:0;right:0;height:var(--cap);top:calc((1 - var(--p)) * (100% - var(--cap)))}
+.fader.v .fcap{left:0;right:0;height:var(--cap);top:0;will-change:transform}
 .fader.v .fcap::after{left:12%;right:12%;top:50%;height:2px;margin-top:-1px}
-.fader.h .fcap{top:0;bottom:0;width:var(--cap);left:calc(var(--p) * (100% - var(--cap)));
+.fader.h .fcap{top:0;bottom:0;width:var(--cap);left:0;will-change:transform;
   background:repeating-linear-gradient(90deg,rgba(255,255,255,.07) 0 1px,transparent 1px 4px),
     linear-gradient(90deg,#5a5d62 0%,#33353a 14%,#1e1f22 48%,#2b2d31 86%,#45474c 100%)}
 .fader.h .fcap::after{top:14%;bottom:14%;left:50%;width:2px;margin-left:-1px}
@@ -348,9 +350,12 @@ main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) minmax
 input[type=file]{display:none}
 .bpmpop{position:absolute;z-index:40;border-radius:6px;padding:10px;display:none;width:280px;background:var(--metal);box-shadow:var(--bevel),0 14px 40px rgba(0,0,0,.7)}
 .bpmpop.show{display:block}
-.bpmpop .g{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:8px}
+.bpmpop .g{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:5px}
 .bpmpop .g .btn{padding:0;height:36px}
 .bpmpop .bt{display:flex;justify-content:space-between;align-items:center;font-weight:600;font-family:var(--mono);font-size:12.5px}
+.bpmpop .glab{font-size:10.5px;color:var(--silk);letter-spacing:.06em;margin-top:9px}
+.bpmpop .g:first-of-type{margin-top:4px}
+.fps{font-size:10.5px;color:var(--dim2);min-width:50px;text-align:right}
 .bpmpop .hint{font-size:11px;color:var(--dim);margin-top:8px;line-height:1.5}
 </style>
 </head>
@@ -363,6 +368,8 @@ input[type=file]{display:none}
     <button class="btn" id="btnAmNext" disabled>⏭ 下一首</button>
     <div class="am-status" id="amStatus"></div>
     <div class="spacer"></div>
+    <span class="fps num" id="fps"></span>
+    <button class="btn on" id="btnSnap" style="--led:#39e07a">⌗ 吸附</button>
     <div class="master"><span>主音量</span><div id="masterFader"></div><div class="mmeter" id="masterMeter"><i></i></div></div>
   </header>
 
@@ -386,7 +393,8 @@ input[type=file]{display:none}
         <div class="tabs" id="sheetTabs"><button data-t="lib" class="on">曲库</button><button data-t="am">自动混音列表</button></div>
         <input class="search" id="search" placeholder="搜索歌名" autocomplete="off">
         <div class="spacer"></div>
-        <label class="btn primary" id="btnImport">＋ 导入音频<input type="file" id="fileIn" multiple accept=".wav,.mp3,.flac,.m4a,.aac,.aif,.aiff,audio/*"></label>
+        <label class="btn primary" id="btnImportDir">＋ 导入文件夹<input type="file" id="dirIn" webkitdirectory multiple></label>
+        <label class="btn" id="btnImport">＋ 导入文件<input type="file" id="fileIn" multiple accept=".wav,.mp3,.flac,.m4a,.aac,.aif,.aiff,audio/*"></label>
         <button class="btn" id="sheetClose">收起</button>
       </div>
       <div class="sbody" id="sbody"></div>
