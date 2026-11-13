@@ -1,5 +1,5 @@
 // 离线缓存：有网时总是取最新版本，没网时用缓存
-const CACHE = 'djmix-v2';
+const CACHE = 'djmix-v3';
 const FILES = ['./', './index.html', './app.js', './engine.js', './analysis.js', './library.js', './ui.js', './worklet.js', './manifest.webmanifest', './icon-180.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {

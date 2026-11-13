@@ -12,7 +12,8 @@ function bestRatio(r) { let best = r; for (const c of [r * 2, r / 2]) if (Math.a
 
 // ---------- 设置 ----------
 const SETTINGS_KEY = 'djmix-settings-v1';
-const settings = Object.assign({ zoom: 3, snap: true, am: { beats: 16, style: 'auto', match: true }, queue: [] }, (() => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch (e) { return {}; } })());
+const settings = Object.assign({ zoom: 3, snap: true, am: { beats: 16, style: 'auto', match: true, back: false }, queue: [] }, (() => { try { return JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}; } catch (e) { return {}; } })());
+if (settings.am && settings.am.back === undefined) settings.am.back = false;
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch (e) {} }
 
 // 暂停时的磁带停止时间（秒）
@@ -1069,13 +1070,14 @@ function renderAmTab(body) {
   const s = settings.am;
   const seg = (opts, val, fn) => {
     const e = h('div', { class: 'seg' });
-    for (const [v, label] of opts) { const b = h('button', { class: v === val ? 'on' : '' }, label); b.onclick = () => { fn(v); saveSettings(); renderSheet(); }; e.append(b); }
+    for (const [v, label] of opts) { const b = h('button', { class: v === val ? 'on' : '' }, label); b.onclick = () => { fn(v); saveSettings(); amReplan(); renderSheet(); }; e.append(b); }
     return e;
   };
   const set = h('div', { class: 'amset' },
     h('label', {}, '过渡长度', seg([[8, '8 拍'], [16, '16 拍'], [32, '32 拍']], s.beats, (v) => (s.beats = v))),
     h('label', {}, '过渡方式', seg([['auto', '自动'], ['stems', '分轨渐入'], ['eq', '低频交换'], ['filter', '滤波'], ['fade', '淡入淡出']], s.style, (v) => (s.style = v))),
     h('label', {}, '匹配速度', seg([[true, '开'], [false, '关']], s.match, (v) => (s.match = v))),
+    h('label', {}, '过渡完以后', seg([[false, '保持匹配后的速度'], [true, '慢慢回到原速']], s.back, (v) => (s.back = v))),
   );
   body.append(set);
   const tools = h('div', { style: 'display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap' });
@@ -1183,13 +1185,125 @@ function amSkip() {
   if (!am.on) return;
   if (am.loading) { toast('下一首还在载入…'); return; }
   if (am.phase === 'last') { toast('已经是列表最后一首了'); return; }
+  if (am.phase === 'trans') { toast('正在过渡中'); return; }
   if (am.phase === 'wait' && am.tr && !am.tr.scheduled) {
     const out = decks[am.cur];
     const bl = out.beatLen() || 0.5;
-    am.tr.start = out.nextBar(out.audio.pos() + 0.6);
-    am.tr.len = Math.min(am.tr.len, 8 * bl);
-    toast('下一个小节开始过渡');
+    const start = out.nextBar(out.audio.pos() + 0.6);
+    const end = Math.min(out.song.last || out.duration, out.duration);
+    // 用你设置的过渡长度；只有歌剩下的部分不够长时才缩短
+    am.tr.start = start;
+    am.tr.len = Math.max(4 * bl, Math.min(settings.am.beats * bl, end - start));
+    am.tr.skipped = true;
+    const beats = Math.round(am.tr.len / bl);
+    toast(`下一个小节开始过渡（${beats} 拍）`);
   }
+}
+// 改了过渡设置：还没开始的过渡按新设置重新安排
+function amReplan() {
+  if (!am.on || am.phase !== 'wait' || !am.tr || am.tr.scheduled) return;
+  if (am.tr.skipped) {
+    const out = decks[am.cur], bl = out.beatLen() || 0.5;
+    const end = Math.min(out.song.last || out.duration, out.duration);
+    am.tr.len = Math.max(4 * bl, Math.min(settings.am.beats * bl, end - am.tr.start));
+  } else am.tr = amPlan();
+}
+
+// ---------- 分轨渐入：看每首歌每条分轨什么时候真正有声音 ----------
+const ROLE_PRI = { drums: 0, inst: 1, bass: 2, music: 3, vox: 4 };
+const stemRole = (s) => (KIND_MAP[s.kind] && KIND_MAP[s.kind].role) || 'music';
+const thrCache = new WeakMap();
+// 这条分轨算「有声音」的门槛：它自己常见响度的 35%
+function stemThr(arr) {
+  let t = thrCache.get(arr);
+  if (t !== undefined) return t;
+  const step = Math.max(1, Math.floor(arr.length / 4000)), v = [];
+  for (let i = 0; i < arr.length; i += step) if (arr[i] > 8) v.push(arr[i]);
+  if (!v.length) t = 256;
+  else { v.sort((a, b) => a - b); t = Math.max(20, v[Math.floor(v.length * 0.95)] * 0.35); }
+  thrCache.set(arr, t);
+  return t;
+}
+// 从 from 秒往后，第一次持续有声音的时间（秒）；没有就返回 Infinity
+function firstSound(arr, from, to) {
+  const R = WAVE_RATE, thr = stemThr(arr), W = Math.round(0.3 * R);
+  const a = Math.max(0, Math.floor(from * R)), b = Math.min(arr.length - W, Math.ceil(to * R));
+  if (b <= a) return Infinity;
+  let sum = 0; for (let i = a; i < a + W; i++) sum += arr[i];
+  for (let i = a; i < b; i++) { if (sum >= thr * W) return i / R; sum += arr[i + W] - arr[i]; }
+  return Infinity;
+}
+// 在 to 秒之前，最后一次持续有声音的时间（秒）；没有就返回 -Infinity
+function lastSound(arr, from, to) {
+  const R = WAVE_RATE, thr = stemThr(arr), W = Math.round(0.3 * R);
+  const a = Math.max(0, Math.floor(from * R)), b = Math.min(arr.length, Math.ceil(to * R));
+  if (b - W <= a) return -Infinity;
+  let sum = 0; for (let i = b - W; i < b; i++) sum += arr[i];
+  for (let i = b - W; i > a; i--) { if (sum >= thr * W) return (i + W) / R; sum += arr[i - 1] - arr[i + W - 1]; }
+  return -Infinity;
+}
+// 安排每条分轨在过渡里什么时候进、什么时候出（进度 0..1）
+function buildStemPlan(out, inc, tr, introPos) {
+  const D = tr.len / out.rate();          // 过渡的真实时长（秒）
+  const Lout = tr.len, Lin = D * inc.rate();
+  const plan = { inW: [], outW: [], chIn: [0, 0.5], chOut: [0.5, 1], bassAt: 0.5, order: [] };
+  let incVoxStart = null;
+  // 下一首：哪条分轨最先出声就最先推上来，按出声顺序一条条进
+  if (inc.isMulti && inc.wave) {
+    const items = inc.stems.map((s, j) => {
+      const on = inc.wave.data[j] ? firstSound(inc.wave.data[j], introPos, introPos + Lin) : Infinity;
+      return { j, role: stemRole(s), label: s.label, q: isFinite(on) ? Math.max(0, (on - introPos) / Lin) : Infinity };
+    });
+    const sounding = items.filter((x) => x.q < 1).sort((a, b) => (a.q - b.q) || (ROLE_PRI[a.role] - ROLE_PRI[b.role]));
+    const K = sounding.length;
+    sounding.forEach((x, k) => {
+      const e = K > 1 ? 0.6 * k / (K - 1) : 0;
+      const s0 = clamp(Math.max(e, x.q - 0.03), 0, 0.85);
+      plan.inW[x.j] = [s0, Math.min(1, s0 + 0.15)];
+    });
+    const silent = items.filter((x) => !(x.q < 1));
+    silent.forEach((x) => (plan.inW[x.j] = [0.85, 1]));   // 过渡期间本来就没声音的轨：最后打开
+    plan.order = sounding.map((x) => x.label);
+    // 低音交换的时刻 = 下一首的贝斯（没有贝斯就看伴奏）推上来的时刻
+    const b = sounding.find((x) => x.role === 'bass') || sounding.find((x) => x.role === 'inst');
+    if (b) {
+      plan.bassAt = plan.inW[b.j][0];
+      if (b.role === 'bass') plan.inW[b.j] = [plan.bassAt, Math.min(1, plan.bassAt + 0.08)];
+    }
+    const v = sounding.filter((x) => x.role === 'vox');
+    if (v.length) incVoxStart = Math.min(...v.map((x) => plan.inW[x.j][0]));
+  } else plan.order = ['整首'];
+  // 当前这首：越早没声音的轨越先退，一直响到最后的轨最后退
+  if (out.isMulti && out.wave) {
+    const items = out.stems.map((s, j) => {
+      const last = out.wave.data[j] ? lastSound(out.wave.data[j], tr.start, tr.start + Lout) : -Infinity;
+      return { j, role: stemRole(s), r: isFinite(last) ? (last - tr.start) / Lout : -1 };
+    });
+    const sounding = items.filter((x) => x.r > 0.02).sort((a, b) => (a.r - b.r) || (ROLE_PRI[b.role] - ROLE_PRI[a.role]));
+    const K = sounding.length;
+    sounding.forEach((x, k) => {
+      const g = K > 1 ? 0.1 + 0.7 * k / (K - 1) : 0.6;
+      const w0 = clamp(Math.min(g, x.r - 0.1), 0, 0.85);
+      plan.outW[x.j] = [w0, Math.min(1, w0 + 0.15)];
+    });
+    items.filter((x) => !(x.r > 0.02)).forEach((x) => (plan.outW[x.j] = [0, 0.1]));
+    // 两首歌的贝斯不同时响：和下一首的贝斯同一时刻交换
+    items.filter((x) => x.role === 'bass').forEach((x) => (plan.outW[x.j] = [plan.bassAt, Math.min(1, plan.bassAt + 0.08)]));
+    // 两首歌的人声不重叠：当前这首的人声在下一首人声进来之前退完
+    const v = items.filter((x) => x.role === 'vox' && x.r > 0.02);
+    if (v.length && incVoxStart !== null) {
+      for (const x of v) {
+        const w = plan.outW[x.j];
+        if (w[1] > incVoxStart) { const end = Math.max(0.15, incVoxStart); plan.outW[x.j] = [Math.max(0, end - 0.15), end]; }
+      }
+      const outVoxEnd = Math.max(...v.map((x) => plan.outW[x.j][1]));
+      inc.stems.forEach((s, j) => { if (stemRole(s) === 'vox' && plan.inW[j] && plan.inW[j][0] < outVoxEnd) plan.inW[j] = [outVoxEnd, Math.min(1, outVoxEnd + 0.15)]; });
+    }
+  }
+  // 普通整首歌（没有分轨）：在低音交换之前推上来 / 交换之后再退
+  plan.chIn = [0, Math.max(0.3, plan.bassAt)];
+  plan.chOut = [Math.max(0.5, plan.bassAt), 1];
+  return plan;
 }
 
 function amStyle() {
@@ -1201,10 +1315,12 @@ function amStyle() {
 function amSchedule() {
   const out = decks[am.cur], inc = decks[1 - am.cur];
   const ctx = engine.ctx;
+  // 上一首还在慢慢回原速的话先停住，不然两首歌的速度会越走越偏
+  am.glide = null;
   let matched = false;
   if (settings.am.match && out.bpm && inc.bpm) {
     const r = bestRatio(out.curBpm() / inc.bpm);
-    if (Math.abs(r - 1) <= 0.1) { inc.setTempo(r - 1, true); matched = true; } else inc.setTempo(0, true);
+    inc.setTempo(r - 1, true); matched = true;
   } else inc.setTempo(0, true);
   am.tr.matched = matched;
   am.tr.style = amStyle();
@@ -1220,6 +1336,7 @@ function amSchedule() {
   // 记下过渡开始前各推子的位置，过渡时从这里动
   am.tr.stemBase = decks.map((d) => d.stems.map((x) => x.fader));
   am.tr.chBase = decks.map((d) => d.fader);
+  if (am.tr.style === 'stems') am.tr.plan = buildStemPlan(out, inc, am.tr, Math.max(0, intro));
   amApply(0);
   inc.audio.startAt(t + delay, Math.max(0, intro));
   inc.audio.rep.playing = true;
@@ -1237,25 +1354,22 @@ function amApply(p) {
   else if (style === 'eq') { setA(p); bassSwap(); }
   else if (style === 'filter') { setA(p); out.setFilter(ramp(p, 0.3, 1) * 0.85); }
   else {
-    // 分轨渐入：两边都开着，直接推动每条分轨的推子做过渡（界面上的推子会跟着动）
+    // 分轨渐入：两边都开着，按计划推动每条分轨的推子（界面上的推子会跟着动）
     setA(p < 0.85 ? 0.5 : 0.5 + ramp(p, 0.85, 1) * 0.5);
-    const tr = am.tr;
+    const tr = am.tr, plan = tr.plan || buildStemPlan(out, inc, tr, 0);
+    tr.plan = plan;
+    const win = (w, isIn) => { if (!w) return 1; const r = ramp(p, w[0], Math.max(w[0] + 0.001, w[1])); return isIn ? r : 1 - r; };
     for (const [d, isIn] of [[out, false], [inc, true]]) {
       if (d.isMulti) {
         const base = (tr.stemBase && tr.stemBase[d.i]) || [];
-        d.stems.forEach((s, j) => {
-          const role = (KIND_MAP[s.kind] && KIND_MAP[s.kind].role) || 'music';
-          let g;
-          if (isIn) g = role === 'drums' ? ramp(p, 0, 0.25) : role === 'inst' ? ramp(p, 0, 0.35) : role === 'bass' ? ramp(p, 0.45, 0.55) : role === 'vox' ? ramp(p, 0.7, 0.9) : ramp(p, 0.25, 0.6);
-          else g = 1 - (role === 'vox' ? ramp(p, 0, 0.25) : role === 'music' ? ramp(p, 0.4, 0.75) : role === 'bass' ? ramp(p, 0.45, 0.55) : role === 'inst' ? ramp(p, 0.6, 0.95) : ramp(p, 0.75, 1));
-          d.setStemFader(j, (base[j] !== undefined ? base[j] : 0.5) * g);
-        });
+        d.stems.forEach((s, j) => d.setStemFader(j, (base[j] !== undefined ? base[j] : 0.5) * win(isIn ? plan.inW[j] : plan.outW[j], isIn)));
         d.updateStemGains();
       } else {
-        // 普通整首歌没有分轨推子：推它的总控推子
+        // 普通整首歌没有分轨推子：推它的总控推子，并在低音交换时刻切低频
         const base = tr.chBase ? tr.chBase[d.i] : 0.5;
-        d.setFader(base * (isIn ? ramp(p, 0, 0.5) : 1 - ramp(p, 0.5, 1)));
-        if (isIn) d.setEq('lo', -1 + ramp(p, 0.45, 0.55)); else d.setEq('lo', -ramp(p, 0.45, 0.55));
+        d.setFader(base * win(isIn ? plan.chIn : plan.chOut, isIn));
+        const sw = ramp(p, plan.bassAt, plan.bassAt + 0.08);
+        d.setEq('lo', isIn ? -1 + sw : -sw);
       }
     }
   }
@@ -1269,7 +1383,7 @@ function amFinish() {
   if (am.tr && am.tr.chBase && !out.isMulti && (am.tr.style === 'stems')) out.setFader(am.tr.chBase[out.i]);
   out.setEq('lo', 0); out.setFilter(0); inc.setEq('lo', 0); inc.setFilter(0);
   mixer.setXf(am.cur === 0 ? 1 : 0);
-  if (am.tr && am.tr.matched && Math.abs(inc.tempo) > 0.0005) am.glide = { deck: inc, from: inc.tempo, t: performance.now() };
+  if (settings.am.back && am.tr && am.tr.matched && Math.abs(inc.tempo) > 0.0005) am.glide = { deck: inc, from: inc.tempo, t: performance.now() };
   am.cur = 1 - am.cur; am.idx++;
   amPrepareNext();
 }
@@ -1289,6 +1403,11 @@ function amTick() {
     const ended = !out.audio.playing && p >= out.duration - 0.3;
     if (ended || (out.audio.playing && p >= am.tr.start - 0.35 * out.rate())) amSchedule();
   } else if (am.phase === 'trans') {
+    // 过渡期间下一首一直跟着当前这首的速度（你动了当前这首的变速推子也会跟上）
+    if (am.tr.matched && out.bpm && inc.bpm) {
+      const want = bestRatio(out.curBpm() / inc.bpm) - 1;
+      if (Math.abs(want - inc.tempo) > 1e-5) inc.setTempo(want, true);
+    }
     let prog = am.tr.immediate ? (engine.ctx.currentTime - am.tr.t) / 3 : (p - am.tr.start) / am.tr.len;
     prog = clamp(prog, 0, 1);
     amApply(prog);
@@ -1304,7 +1423,10 @@ function amTick() {
       const left = (am.tr.start - p) / out.rate();
       const nx = songs.find((s) => s.id === am.queue[am.idx + 1]);
       amSetStatus(`自动混音中 · 下一首「${nx ? nx.title : ''}」${left > 0 ? ' · ' + fmtTime(left) + ' 后开始过渡' : ''}${out.audio.playing ? '' : '（当前唱盘已暂停）'}`);
-    } else if (am.phase === 'trans') amSetStatus(`过渡中 ${Math.round((am.tr.prog || 0) * 100)}%`);
+    } else if (am.phase === 'trans') {
+      const ord = am.tr.plan && am.tr.plan.order && am.tr.plan.order.length > 1 ? ' · 切入顺序：' + am.tr.plan.order.join(' › ') : '';
+      amSetStatus(`过渡中 ${Math.round((am.tr.prog || 0) * 100)}%${am.tr.matched ? ' · 速度已匹配' : ''}${ord}`);
+    }
     else if (am.phase === 'last') amSetStatus('自动混音中 · 最后一首');
   }
 }
