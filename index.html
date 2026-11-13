@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="分轨DJ">
+<meta name="theme-color" content="#0a0b0f">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-180.png">
+<title>分轨DJ</title>
+<style>
+:root{
+  --a:#33b6ff; --b:#ff8833; --bg:#0b0c0e;
+  --silk:#a7adb8; --silk2:#6d737e; --text:#e6e9ee; --dim:#8c929d; --dim2:#5c626c;
+  --good:#39e07a; --warn:#ffc83a; --bad:#ff3b30;
+  --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  --brush:repeating-linear-gradient(90deg,rgba(255,255,255,.022) 0 1px,rgba(0,0,0,.035) 1px 2px,rgba(255,255,255,.012) 2px 4px);
+  --metal:var(--brush),linear-gradient(180deg,#2b2d31 0%,#222428 45%,#1b1c1f 100%);
+  --bevel:inset 0 1px 0 rgba(255,255,255,.09),inset 0 -1px 0 rgba(0,0,0,.7),0 0 0 1px #050506,0 4px 14px rgba(0,0,0,.55);
+  --lcd:linear-gradient(180deg,#040506,#0a0c0f);
+  --lcdshadow:inset 0 2px 8px rgba(0,0,0,.95),inset 0 0 0 1px #000,0 1px 0 rgba(255,255,255,.07);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;color:var(--text);
+  background:radial-gradient(ellipse at 50% 0%,#17191c 0%,#0b0c0e 70%) fixed,#0b0c0e;
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans","Helvetica Neue",sans-serif;font-size:14px;
+  overflow:hidden;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;touch-action:manipulation;
+  overscroll-behavior:none;-webkit-tap-highlight-color:transparent}
+button{font:inherit;color:inherit}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+#app{position:fixed;inset:0;display:flex;flex-direction:column;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+
+/* ---------- 实体按键（橡胶按键 + LED） ---------- */
+.btn{--led:#4aa3ff;position:relative;background:linear-gradient(180deg,#36383d,#26282c 55%,#1f2124);border:0;border-radius:5px;padding:0 12px;height:34px;
+  font-weight:600;font-size:13px;color:#c7ccd5;letter-spacing:.02em;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.11),inset 0 -1px 0 rgba(0,0,0,.5),0 0 0 1px #08090a,0 2px 3px rgba(0,0,0,.65);cursor:pointer;touch-action:manipulation}
+.btn:active{transform:translateY(1px);box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 0 0 1px #08090a,0 1px 1px rgba(0,0,0,.6);filter:brightness(1.08)}
+.btn.on{color:var(--led);background:linear-gradient(180deg,color-mix(in srgb,var(--led) 22%,#2a2c30),color-mix(in srgb,var(--led) 12%,#1d1f22));
+  box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--led) 70%,transparent),inset 0 0 14px color-mix(in srgb,var(--led) 30%,transparent),0 0 12px color-mix(in srgb,var(--led) 35%,transparent),0 0 0 1px #08090a;
+  text-shadow:0 0 6px color-mix(in srgb,var(--led) 80%,transparent)}
+.btn.primary{--led:#4aa3ff;color:#dbe9ff;background:linear-gradient(180deg,#30476a,#22324c);box-shadow:inset 0 1px 0 rgba(255,255,255,.14),0 0 0 1px #0a1220,0 2px 3px rgba(0,0,0,.6)}
+.btn.danger{color:#ffd0cc;background:linear-gradient(180deg,#5a2421,#3c1714)}
+.btn.small{height:28px;padding:0 9px;font-size:12px}
+.btn:disabled{opacity:.35}
+
+/* ---------- 顶栏 ---------- */
+header{flex:none;height:50px;display:flex;align-items:center;gap:8px;padding:0 10px;background:var(--metal);box-shadow:inset 0 -1px 0 #000,0 1px 0 rgba(255,255,255,.04)}
+.logo{font-weight:800;letter-spacing:.12em;font-size:15px;margin:0 8px 0 4px;white-space:nowrap;
+  background:linear-gradient(180deg,#f4f6f9 0%,#a9aeb6 55%,#e1e4e9 100%);-webkit-background-clip:text;background-clip:text;color:transparent;
+  filter:drop-shadow(0 1px 0 rgba(0,0,0,.9))}
+.logo b{font-weight:800}
+#btnAm.on{--led:var(--good)}
+.am-status{color:var(--dim);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:34vw;font-family:var(--mono)}
+.am-status.live{color:var(--good);text-shadow:0 0 6px rgba(57,224,122,.5)}
+.spacer{flex:1}
+.master{display:flex;align-items:center;gap:10px;color:var(--silk);font-size:11px;letter-spacing:.08em}
+.master .fader.h{width:150px;height:28px}
+.mmeter{width:72px;height:8px;border-radius:1px;position:relative;overflow:hidden;
+  background:repeating-linear-gradient(90deg,#132017 0 4px,#060708 4px 6px);box-shadow:inset 0 0 0 1px #000}
+.mmeter i{position:absolute;inset:0;background:linear-gradient(90deg,#2bd96b 0,#2bd96b 62%,#f4d03f 80%,#ff3b30 94%);
+  -webkit-mask:repeating-linear-gradient(90deg,#000 0 4px,transparent 4px 6px);mask:repeating-linear-gradient(90deg,#000 0 4px,transparent 4px 6px);
+  clip-path:inset(0 calc((1 - var(--l,0)) * 100%) 0 0)}
+
+/* ---------- 波形屏幕 ---------- */
+.waves{flex:none;height:clamp(128px,20vh,230px);margin:8px 8px 0;border-radius:6px;overflow:hidden;background:#030405;position:relative;touch-action:none;
+  box-shadow:inset 0 0 0 1px #000,0 0 0 4px #17181b,0 0 0 5px #050506,0 1px 0 5px rgba(255,255,255,.05)}
+.waves canvas{position:absolute;inset:0;width:100%;height:100%}
+.waves::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(180deg,rgba(255,255,255,.05) 0%,rgba(255,255,255,0) 22%),radial-gradient(ellipse at 50% 120%,rgba(0,0,0,.35),transparent 60%);box-shadow:inset 0 2px 10px rgba(0,0,0,.9)}
+.lane-info{position:absolute;left:10px;display:flex;gap:8px;align-items:center;font-size:12px;pointer-events:none;text-shadow:0 1px 3px #000;z-index:1}
+.lane-info .tag{font-family:var(--mono);font-weight:800;font-size:13px}
+.lane-info .lt{max-width:40vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#d9dde4}
+.lane-info .lr{color:var(--dim)}
+.lane-a{top:5px}.lane-a .tag{color:var(--a);text-shadow:0 0 6px var(--a)}
+.lane-b{top:calc(50% + 5px)}.lane-b .tag{color:var(--b);text-shadow:0 0 6px var(--b)}
+.zoom{position:absolute;right:6px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:5px;z-index:2}
+.zoom .btn{width:30px;height:26px;padding:0;font-size:15px}
+
+/* ---------- 主区：面板 ---------- */
+main{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(250px,25vw) minmax(0,1fr);gap:8px;padding:10px 8px 8px;position:relative}
+.deck,.mixer{background:
+    radial-gradient(circle at 9px 9px,#7c8088 0 1.6px,#2a2c30 2.2px,#0d0e10 3.2px,transparent 3.8px),
+    radial-gradient(circle at calc(100% - 9px) 9px,#7c8088 0 1.6px,#2a2c30 2.2px,#0d0e10 3.2px,transparent 3.8px),
+    radial-gradient(circle at 9px calc(100% - 9px),#7c8088 0 1.6px,#2a2c30 2.2px,#0d0e10 3.2px,transparent 3.8px),
+    radial-gradient(circle at calc(100% - 9px) calc(100% - 9px),#7c8088 0 1.6px,#2a2c30 2.2px,#0d0e10 3.2px,transparent 3.8px),
+    var(--metal);
+  border-radius:6px;box-shadow:var(--bevel)}
+.deck{--dc:var(--a);padding:12px 16px 12px;display:flex;flex-direction:column;gap:8px;min-width:0;min-height:0}
+.deck.b{--dc:var(--b)}
+.dhead{display:flex;align-items:stretch;gap:8px;min-width:0;flex:none}
+.lcd{flex:1;min-width:0;display:flex;align-items:center;gap:10px;background:var(--lcd);border-radius:4px;box-shadow:var(--lcdshadow);padding:5px 10px;position:relative;overflow:hidden}
+.lcd::after{content:"";position:absolute;inset:0;background:linear-gradient(180deg,rgba(255,255,255,.045),rgba(255,255,255,0) 45%);pointer-events:none}
+.dletter{flex:none;font-family:var(--mono);font-weight:800;font-size:20px;color:var(--dc);text-shadow:0 0 8px color-mix(in srgb,var(--dc) 70%,transparent)}
+.tt{flex:1;min-width:0}
+.tname{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#eef1f5}
+.tsub{font-size:11px;color:var(--dim);display:flex;gap:6px;align-items:center;margin-top:2px;white-space:nowrap;overflow:hidden}
+.mode{color:var(--dc);border:1px solid color-mix(in srgb,var(--dc) 45%,transparent);border-radius:2px;padding:0 5px;font-size:10.5px;line-height:15px;font-family:var(--mono);letter-spacing:.03em}
+.bpmbox{flex:none;background:transparent;border:0;border-left:1px solid #1c1f24;padding:0 0 0 10px;text-align:right;line-height:1.05;cursor:pointer}
+.bpmbox .bpm{font-size:21px;font-weight:700;color:#f3f5f8}
+.bpmbox small{display:block;font-size:9.5px;color:var(--dim);letter-spacing:.1em}
+.timebox{flex:none;text-align:right;line-height:1.15;border-left:1px solid #1c1f24;padding-left:10px}
+.timebox .rm{color:var(--dc);font-weight:700;font-size:15px;text-shadow:0 0 6px color-mix(in srgb,var(--dc) 50%,transparent)}
+.timebox .el{color:var(--dim);font-size:10.5px}
+.beats{display:flex;gap:3px;margin-top:3px;justify-content:flex-end}
+.beats i{width:10px;height:3px;background:#1d2026}
+.beats i.on{background:var(--dc);box-shadow:0 0 4px var(--dc)}
+.beats i.on.first{background:#fff;box-shadow:0 0 4px #fff}
+.loadbtn{height:auto!important;align-self:stretch}
+.overview{flex:none;height:34px;width:100%;border-radius:3px;background:#030405;touch-action:none;display:block;box-shadow:var(--lcdshadow)}
+.dbody{flex:1;min-height:0;display:flex;gap:10px}
+.deck.b .dbody{flex-direction:row-reverse}
+.tempo-col{flex:none;width:60px;display:flex;flex-direction:column;align-items:center;gap:6px;min-height:0}
+.tval{font-size:11px;font-weight:700;color:var(--dim);background:var(--lcd);box-shadow:var(--lcdshadow);border-radius:3px;padding:2px 5px;min-width:56px;text-align:center}
+.tval.mod{color:var(--dc);text-shadow:0 0 6px color-mix(in srgb,var(--dc) 60%,transparent)}
+.silk{font-size:10px;color:var(--silk);letter-spacing:.1em}
+.bend{display:flex;gap:4px}
+.bend .btn{width:27px;height:30px;padding:0;font-size:15px}
+.bend .btn.on{--led:var(--dc)}
+.dmain{flex:1;min-width:0;min-height:0;position:relative;display:flex;flex-direction:column;gap:6px}
+.viewtabs{display:none;align-self:center;flex:none;background:#0d0e10;padding:3px;border-radius:5px;gap:3px;box-shadow:inset 0 1px 3px rgba(0,0,0,.9),0 1px 0 rgba(255,255,255,.05)}
+.deck.multi .viewtabs{display:flex}
+.viewtabs button{border:0;background:transparent;border-radius:3px;height:24px;padding:0 14px;font-size:12px;font-weight:600;color:var(--dim)}
+.viewtabs button.on{background:linear-gradient(180deg,#3a3c41,#26282c);color:#eef1f5;box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 1px 2px rgba(0,0,0,.6)}
+
+/* ---------- 唱机 ---------- */
+.platter-wrap{flex:1;min-height:0;display:flex;align-items:center;justify-content:center;container-type:size}
+.ttb{position:relative;height:min(100cqh,calc(100cqw / 1.18));aspect-ratio:1.18/1}
+.platter{position:absolute;left:0;top:0;height:100%;aspect-ratio:1/1;border-radius:50%;touch-action:none;
+  background:conic-gradient(from 0deg,#8f9399,#45474c 12%,#c3c6cb 25%,#4a4c51 38%,#9da0a6 50%,#3f4146 63%,#b8bbc0 76%,#47494e 88%,#8f9399);
+  box-shadow:0 14px 34px rgba(0,0,0,.75),0 0 0 1px #000,inset 0 0 0 1px rgba(255,255,255,.25)}
+.platter .spin{position:absolute;inset:0;border-radius:50%}
+.platter .dots{position:absolute;inset:0;border-radius:50%;background:repeating-conic-gradient(from 0deg,#e6e8eb 0 1.1deg,transparent 1.1deg 4deg);
+  -webkit-mask:radial-gradient(circle,transparent 0 92.2%,#000 92.6% 95.4%,transparent 95.8%);mask:radial-gradient(circle,transparent 0 92.2%,#000 92.6% 95.4%,transparent 95.8%);opacity:.75}
+.platter .vinyl{position:absolute;inset:6%;border-radius:50%;
+  background:
+    radial-gradient(circle,transparent 0 63.5%,rgba(255,255,255,.05) 63.8% 64.4%,transparent 64.8% 77%,rgba(255,255,255,.04) 77.3% 77.8%,transparent 78.2% 89%,rgba(255,255,255,.035) 89.3% 89.8%,transparent 90.2%),
+    repeating-radial-gradient(circle,#0b0b0c 0 1px,#141416 1px 2px,#0e0e0f 2px 3px),
+    #0d0d0e;
+  box-shadow:0 0 0 1px #000,inset 0 0 0 2px #1a1a1c}
+.platter .label{position:absolute;inset:33%;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-direction:column;
+  background:radial-gradient(circle,#0b0b0c 0 5%,#bfc2c7 5.5% 7%,transparent 7.5%),
+    radial-gradient(circle,color-mix(in srgb,var(--dc) 62%,#151515) 0 70%,color-mix(in srgb,var(--dc) 45%,#0e0e0e) 100%);
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.6)}
+.platter .label b{position:absolute;top:16%;font-family:var(--mono);font-size:min(4cqh,18px);color:rgba(255,255,255,.88);letter-spacing:.15em}
+.platter .label span{position:absolute;bottom:18%;font-size:min(1.9cqh,9px);color:rgba(255,255,255,.7);letter-spacing:.2em}
+.platter .sheen{position:absolute;inset:6%;border-radius:50%;pointer-events:none;
+  background:conic-gradient(from 25deg,rgba(255,255,255,0) 0deg,rgba(255,255,255,.085) 24deg,rgba(255,255,255,0) 52deg,rgba(255,255,255,0) 180deg,rgba(255,255,255,.07) 204deg,rgba(255,255,255,0) 232deg);
+  -webkit-mask:radial-gradient(circle,transparent 0 35%,#000 36%);mask:radial-gradient(circle,transparent 0 35%,#000 36%)}
+.platter .spindle{position:absolute;left:50%;top:50%;width:3.2%;height:3.2%;transform:translate(-50%,-50%);border-radius:50%;
+  background:radial-gradient(circle at 35% 30%,#ffffff,#a9adb3 40%,#55585e 100%);box-shadow:0 1px 2px rgba(0,0,0,.8)}
+.platter.touch{box-shadow:0 14px 34px rgba(0,0,0,.75),0 0 0 1px #000,0 0 0 3px color-mix(in srgb,var(--dc) 70%,transparent),0 0 18px color-mix(in srgb,var(--dc) 45%,transparent)}
+.platter.nudge{box-shadow:0 14px 34px rgba(0,0,0,.75),0 0 0 1px #000,0 0 0 6px color-mix(in srgb,var(--dc) 55%,transparent)}
+.tonearm{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible;filter:drop-shadow(0 5px 4px rgba(0,0,0,.65))}
+
+/* ---------- 分轨通道（调音台通道条） ---------- */
+.deck.view-stems .platter-wrap{display:none}
+.stems{display:none;flex:1;min-height:0;gap:5px;justify-content:center;position:relative}
+.deck.view-stems .stems{display:flex}
+.strip{--c:#888;flex:1 1 0;min-width:0;max-width:94px;display:flex;flex-direction:column;align-items:center;gap:6px;
+  background:linear-gradient(180deg,#1f2124,#18191c);border-radius:4px;padding:6px 4px;position:relative;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.06),inset 0 0 0 1px #0a0b0c}
+.sname{flex:none;width:100%;text-align:center;font-size:11.5px;font-weight:700;padding:3px 2px;border-radius:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  color:#fff;background:linear-gradient(180deg,color-mix(in srgb,var(--c) 70%,#000),color-mix(in srgb,var(--c) 45%,#000));
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.6),0 0 8px color-mix(in srgb,var(--c) 25%,transparent);text-shadow:0 1px 1px rgba(0,0,0,.6)}
+.strip.dead .sname{background:#2a2c30;color:#7d828b;box-shadow:inset 0 0 0 1px #000}
+.strip.dead .fcap{filter:brightness(.6)}
+.sfw{flex:1;min-height:0;width:100%;display:flex;justify-content:center;gap:5px}
+.smeter{width:6px;margin:8px 0;position:relative;border-radius:1px;background:repeating-linear-gradient(0deg,#18201b 0 3px,#060708 3px 5px);box-shadow:inset 0 0 0 1px #000}
+.smeter i{position:absolute;inset:0;background:linear-gradient(0deg,var(--c) 0,var(--c) 82%,#ff3b30 94%);
+  -webkit-mask:repeating-linear-gradient(0deg,#000 0 3px,transparent 3px 5px);mask:repeating-linear-gradient(0deg,#000 0 3px,transparent 3px 5px);
+  clip-path:inset(calc((1 - var(--l,0)) * 100%) 0 0 0)}
+.strip .fader.v{width:34px;height:100%}
+.sbtns{display:flex;gap:4px;flex:none}
+.sbtns button{width:29px;height:26px;padding:0;border:0;border-radius:4px;font-size:12px;font-weight:800;color:#9aa0aa;
+  background:linear-gradient(180deg,#36383d,#232528);box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 0 0 1px #08090a,0 2px 2px rgba(0,0,0,.6)}
+.sbtns .m.on{color:#ffd6d3;background:linear-gradient(180deg,#a3241c,#6e1610);box-shadow:inset 0 0 0 1px #ff5a50,0 0 10px rgba(255,59,48,.55);text-shadow:0 0 5px #ff8a82}
+.sbtns .s.on{color:#2a1f00;background:linear-gradient(180deg,#ffd45a,#d9a514);box-shadow:inset 0 0 0 1px #ffe08a,0 0 10px rgba(255,200,58,.55)}
+.seq{flex:none;width:100%;max-width:62px;height:23px;border:0;border-radius:4px;font-size:11px;font-weight:700;padding:0;position:relative;color:#9aa0aa;
+  background:linear-gradient(180deg,#36383d,#232528);box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 0 0 1px #08090a,0 2px 2px rgba(0,0,0,.6)}
+.seq.mod::after{content:"";position:absolute;right:5px;top:50%;margin-top:-2.5px;width:5px;height:5px;border-radius:50%;background:var(--c);box-shadow:0 0 5px var(--c)}
+.seq.open{color:#fff;box-shadow:inset 0 0 0 1px var(--c),0 0 8px color-mix(in srgb,var(--c) 45%,transparent)}
+.stem-pop{position:absolute;left:0;right:0;bottom:0;border-radius:5px;padding:10px 12px 12px;z-index:5;display:none;
+  background:var(--metal);box-shadow:var(--bevel),0 -10px 30px rgba(0,0,0,.6)}
+.stem-pop.show{display:block}
+.stem-pop .ph{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.stem-pop .ph b{color:#fff;font-size:12px;padding:2px 8px;border-radius:2px;background:color-mix(in srgb,var(--c) 55%,#000)}
+.stem-pop .knobs{display:flex;justify-content:space-around;gap:6px}
+.empty-msg,.loading{position:absolute;inset:0;display:flex;flex-direction:column;gap:12px;align-items:center;justify-content:center;color:var(--dim);text-align:center;
+  background:var(--lcd);box-shadow:var(--lcdshadow);border-radius:5px;z-index:4;font-family:var(--mono);font-size:13px}
+.loading{display:none}
+.deck.busy .loading{display:flex}
+.deck.loaded .empty-msg{display:none}
+.bar{width:60%;height:4px;background:#14171b;overflow:hidden;box-shadow:inset 0 0 0 1px #000}
+.bar i{display:block;height:100%;width:calc(var(--p,0)*100%);background:var(--dc);box-shadow:0 0 6px var(--dc);transition:width .2s}
+
+/* ---------- 走带区 ---------- */
+.transport{flex:none;display:flex;gap:10px;align-items:center;height:66px}
+.deck.b .transport{flex-direction:row-reverse}
+.tb-cue,.tb-play{width:60px;height:60px!important;border-radius:50%!important;padding:0!important;font-size:13px;font-weight:800;flex:none}
+.tb-cue{--led:#ffa21f;color:#c9a46a}
+.tb-play{--led:#39e07a;font-size:19px!important;color:#8fd9a9}
+.tb-cue::before,.tb-play::before{content:"";position:absolute;inset:3px;border-radius:50%;box-shadow:0 0 0 2px color-mix(in srgb,var(--led) 35%,#111);pointer-events:none}
+.tb-cue.on::before,.tb-play.on::before{box-shadow:0 0 0 2px var(--led),0 0 10px var(--led)}
+.tb-sync{--led:var(--dc);width:62px;height:44px!important;font-size:12px!important;letter-spacing:.06em}
+.loopgrp{flex:1;display:flex;gap:4px;min-width:0;justify-content:center}
+.loopgrp .btn{padding:0 8px;min-width:38px;height:44px}
+.loopgrp .lp{--led:var(--good);min-width:72px;flex-direction:column;gap:0;line-height:1.15}
+.loopgrp .lp small{font-size:10px;font-weight:600;opacity:.75;font-family:var(--mono)}
+
+/* ---------- 混音台 ---------- */
+.mixer{padding:14px 10px 10px;display:flex;flex-direction:column;gap:8px;min-height:0}
+.mstrips{flex:1;min-height:0;display:flex;gap:4px;position:relative}
+.mstrip{--dc:var(--a);flex:1;display:flex;flex-direction:column;align-items:center;gap:1px;min-height:0;padding:2px 0}
+.mstrip.b{--dc:var(--b)}
+.mstrips::after{content:"";position:absolute;left:50%;top:4px;bottom:4px;width:1px;background:linear-gradient(180deg,transparent,#0a0b0c 10%,#0a0b0c 90%,transparent);box-shadow:1px 0 0 rgba(255,255,255,.05)}
+.mstrip .chtag{font-family:var(--mono);font-size:12px;font-weight:800;color:var(--dc);text-shadow:0 0 6px color-mix(in srgb,var(--dc) 60%,transparent);margin-bottom:2px}
+.mfw{flex:1;min-height:60px;display:flex;gap:7px;width:100%;justify-content:center;padding-top:6px}
+.vu{width:8px;margin:10px 0;position:relative;border-radius:1px;background:repeating-linear-gradient(0deg,#132017 0 3px,#060708 3px 5px);box-shadow:inset 0 0 0 1px #000}
+.vu i{position:absolute;inset:0;background:linear-gradient(0deg,#2bd96b 0,#2bd96b 62%,#f4d03f 80%,#ff3b30 93%);
+  -webkit-mask:repeating-linear-gradient(0deg,#000 0 3px,transparent 3px 5px);mask:repeating-linear-gradient(0deg,#000 0 3px,transparent 3px 5px);
+  clip-path:inset(calc((1 - var(--l,0)) * 100%) 0 0 0)}
+.mstrip .fader.v{width:42px;height:100%}
+.flab{font-size:10px;color:var(--silk);letter-spacing:.1em;margin-top:2px}
+.xfade{flex:none;display:flex;align-items:center;gap:8px;padding:6px 4px 2px;border-top:1px solid #0b0c0d;box-shadow:0 -1px 0 rgba(255,255,255,.04)}
+.xfade .tag{font-family:var(--mono);font-weight:800;font-size:12px;width:16px;text-align:center}
+.xfade .fader.h{flex:1;height:44px}
+
+/* ---------- 旋钮（滚花橡胶帽） ---------- */
+.knob{display:flex;flex-direction:column;align-items:center;width:48px;touch-action:none;flex:none}
+.kbody{position:relative;width:42px;height:42px}
+.kscale{position:absolute;inset:-4px;width:50px;height:50px;overflow:visible}
+.kscale line{stroke:var(--silk2);stroke-width:1.1;stroke-linecap:round}
+.kscale line.c{stroke:var(--silk);stroke-width:1.5}
+.kcap{position:absolute;inset:5px;border-radius:50%;
+  background:repeating-conic-gradient(from 0deg,#121314 0 5deg,#2c2e31 5deg 10deg);
+  box-shadow:0 3px 5px rgba(0,0,0,.8),0 0 0 1px #000}
+.kcap::before{content:"";position:absolute;inset:3px;border-radius:50%;background:radial-gradient(circle,#2e3034 0%,#1d1e21 70%,#17181a 100%);
+  box-shadow:inset 0 0 0 1px rgba(0,0,0,.7)}
+.kline{position:absolute;left:50%;top:2px;width:2px;height:40%;margin-left:-1px;background:#f4f5f7;border-radius:1px;z-index:1;box-shadow:0 0 2px rgba(255,255,255,.3)}
+.kbody::after{content:"";position:absolute;inset:5px;border-radius:50%;pointer-events:none;
+  background:radial-gradient(circle at 34% 28%,rgba(255,255,255,.22),rgba(255,255,255,.04) 38%,transparent 55%)}
+.knob .klab{font-size:10px;color:var(--silk);letter-spacing:.08em;margin-top:0}
+.knob.active .kcap{box-shadow:0 3px 5px rgba(0,0,0,.8),0 0 0 1px #000,0 0 0 2px color-mix(in srgb,var(--dc,#4aa3ff) 50%,transparent)}
+.knob.kill .kline{background:#ff3b30;box-shadow:0 0 5px #ff3b30}
+.mstrip .kbody{width:38px;height:38px}
+.mstrip .knob{margin-bottom:4px}
+.mstrip .knob .klab{margin-top:3px}
+.mstrip .kscale{width:46px;height:46px}
+@media (min-height:900px){ .mstrip .kbody{width:44px;height:44px} .mstrip .kscale{width:52px;height:52px} .knob{width:54px} }
+
+/* ---------- 推子（槽 + 刻度 + 推子帽） ---------- */
+.fader{--cap:28px;position:relative;touch-action:none}
+.fader .fscale{position:absolute;pointer-events:none}
+.fader.v .fscale{left:calc(50% - 15px);right:calc(50% - 15px);top:calc(var(--cap) / 2);bottom:calc(var(--cap) / 2);
+  background:repeating-linear-gradient(180deg,rgba(167,173,184,.5) 0 1px,transparent 1px 10%) top/100% 100.5%}
+.fader.h .fscale{top:calc(50% - 13px);bottom:calc(50% - 13px);left:calc(var(--cap) / 2);right:calc(var(--cap) / 2);
+  background:repeating-linear-gradient(90deg,rgba(167,173,184,.5) 0 1px,transparent 1px 10%) left/100.5% 100%}
+.fader .ftrack{position:absolute;background:#020203;border-radius:2px;box-shadow:inset 0 1px 2px #000,0 1px 0 rgba(255,255,255,.07),0 0 0 1px #0a0a0b}
+.fader.v .ftrack{left:50%;width:5px;margin-left:-2.5px;top:4px;bottom:4px}
+.fader.h .ftrack{top:50%;height:5px;margin-top:-2.5px;left:4px;right:4px}
+.fader .ffill{display:none}
+.fader .fcenter{position:absolute;background:var(--silk)}
+.fader.v .fcenter{left:calc(50% - 20px);right:calc(50% - 20px);height:2px;top:calc(50% - 1px)}
+.fader.h .fcenter{top:calc(50% - 16px);bottom:calc(50% - 16px);width:2px;left:calc(50% - 1px)}
+.fader .fcap{position:absolute;border-radius:3px;
+  background:repeating-linear-gradient(180deg,rgba(255,255,255,.07) 0 1px,transparent 1px 4px),
+    linear-gradient(180deg,#5a5d62 0%,#33353a 14%,#1e1f22 48%,#2b2d31 86%,#45474c 100%);
+  box-shadow:0 5px 9px rgba(0,0,0,.75),0 0 0 1px #000,inset 0 1px 0 rgba(255,255,255,.18)}
+.fader .fcap::after{content:"";position:absolute;background:#f2f3f5;box-shadow:0 0 3px rgba(255,255,255,.35)}
+.fader.v .fcap{left:0;right:0;height:var(--cap);top:calc((1 - var(--p)) * (100% - var(--cap)))}
+.fader.v .fcap::after{left:12%;right:12%;top:50%;height:2px;margin-top:-1px}
+.fader.h .fcap{top:0;bottom:0;width:var(--cap);left:calc(var(--p) * (100% - var(--cap)));
+  background:repeating-linear-gradient(90deg,rgba(255,255,255,.07) 0 1px,transparent 1px 4px),
+    linear-gradient(90deg,#5a5d62 0%,#33353a 14%,#1e1f22 48%,#2b2d31 86%,#45474c 100%)}
+.fader.h .fcap::after{top:14%;bottom:14%;left:50%;width:2px;margin-left:-1px}
+.fader.active .fcap{filter:brightness(1.18)}
+.strip .fader .fcap::after{background:var(--c);box-shadow:0 0 5px var(--c);height:3px}
+.fader.tempo .fcap::after{background:var(--dc);box-shadow:0 0 5px var(--dc)}
+.fader.tempo .fscale{background:repeating-linear-gradient(180deg,rgba(167,173,184,.42) 0 1px,transparent 1px 12.5%) top/100% 100.5%}
+
+/* ---------- 曲库（屏幕） ---------- */
+.sheet{position:absolute;inset:8px;border-radius:6px;z-index:30;display:none;flex-direction:column;overflow:hidden;
+  background:#0a0b0d;box-shadow:0 0 0 1px #000,0 0 0 5px #1b1c1f,0 0 0 6px #050506,0 24px 60px rgba(0,0,0,.75)}
+.sheet.show{display:flex}
+.shead{flex:none;display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--metal);box-shadow:inset 0 -1px 0 #000}
+.tabs{display:flex;background:#0d0e10;padding:3px;border-radius:5px;gap:3px;box-shadow:inset 0 1px 3px rgba(0,0,0,.9),0 1px 0 rgba(255,255,255,.05)}
+.tabs button{border:0;background:transparent;height:28px;padding:0 16px;border-radius:3px;font-weight:600;color:var(--dim)}
+.tabs button.on{background:linear-gradient(180deg,#3a3c41,#26282c);color:#eef1f5;box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 1px 2px rgba(0,0,0,.6)}
+.search{flex:1;max-width:320px;height:32px;border-radius:4px;border:0;background:#050607;color:var(--text);padding:0 12px;font-size:14px;box-shadow:var(--lcdshadow);-webkit-user-select:text;user-select:text}
+.sbody{flex:1;min-height:0;overflow-y:auto;-webkit-overflow-scrolling:touch;touch-action:pan-y;padding:6px 10px 14px}
+.sfoot{flex:none;padding:6px 14px;border-top:1px solid #16181b;font-size:11px;color:var(--dim2);display:flex;gap:12px;font-family:var(--mono)}
+.row{display:flex;align-items:center;gap:10px;padding:8px 8px;border-bottom:1px solid #16181b}
+.row:nth-child(even){background:rgba(255,255,255,.015)}
+.row.cur{background:rgba(57,224,122,.08);box-shadow:inset 3px 0 0 var(--good)}
+.row .swatch{flex:none;width:6px;align-self:stretch;border-radius:1px;display:flex;flex-direction:column;overflow:hidden}
+.row .swatch i{flex:1}
+.row .ri{flex:1;min-width:0}
+.row .rt{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .rs{font-size:11.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.row .rs .mode{margin-right:6px}
+.row .rm{flex:none;width:96px;text-align:right;font-size:11.5px;color:var(--dim);line-height:1.35;font-family:var(--mono)}
+.row .rb{flex:none;display:flex;gap:5px}
+.row .rb .btn{height:34px;min-width:40px}
+.row .rb .la{color:var(--a)}
+.row .rb .lb{color:var(--b)}
+.row .idx{flex:none;width:26px;text-align:center;color:var(--dim);font-weight:700;font-family:var(--mono)}
+.emptylib{color:var(--dim);text-align:center;padding:40px 20px;line-height:1.9}
+.amset{display:flex;flex-wrap:wrap;gap:14px 22px;align-items:center;padding:10px 6px 14px;border-bottom:1px solid #16181b;margin-bottom:10px}
+.amset label{font-size:12px;color:var(--silk);display:flex;align-items:center;gap:8px}
+.seg{display:inline-flex;background:#0d0e10;padding:3px;border-radius:5px;gap:3px;box-shadow:inset 0 1px 3px rgba(0,0,0,.9),0 1px 0 rgba(255,255,255,.05)}
+.seg button{border:0;background:transparent;height:26px;padding:0 11px;border-radius:3px;font-weight:600;color:var(--dim);font-size:12px}
+.seg button.on{background:linear-gradient(180deg,#3a3c41,#26282c);color:#eef1f5;box-shadow:inset 0 1px 0 rgba(255,255,255,.1),0 1px 2px rgba(0,0,0,.6)}
+
+/* ---------- 弹窗、提示、开始页 ---------- */
+#modal{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;display:none;align-items:center;justify-content:center}
+#modal.show{display:flex}
+.mbox{width:min(440px,92vw);max-height:82vh;display:flex;flex-direction:column;border-radius:6px;padding:18px;background:var(--metal);box-shadow:var(--bevel),0 24px 60px rgba(0,0,0,.7)}
+.mbox.wide{width:min(680px,94vw)}
+.mtitle{font-weight:700;font-size:16px;margin-bottom:10px;color:#eef1f5}
+.mbody{flex:1;min-height:0;overflow-y:auto;touch-action:pan-y;color:#c9ced6;line-height:1.6}
+.mbody p{margin:0 0 8px}
+.mbtns{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+.mbtns .btn{height:40px;min-width:84px}
+.tin{width:100%;height:40px;border-radius:4px;border:0;background:#050607;color:var(--text);padding:0 12px;font-size:16px;box-shadow:var(--lcdshadow);-webkit-user-select:text;user-select:text}
+.prev-song{background:var(--lcd);box-shadow:var(--lcdshadow);border-radius:4px;padding:10px 12px;margin-bottom:8px}
+.prev-song .pt{font-weight:600}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.chip{font-size:11.5px;padding:1px 8px;border-radius:2px;color:#fff;background:color-mix(in srgb,var(--c) 50%,#000);box-shadow:inset 0 0 0 1px rgba(0,0,0,.6)}
+#toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);z-index:120;opacity:0;pointer-events:none;transition:.25s;
+  max-width:80vw;text-align:center;padding:10px 16px;border-radius:4px;background:#07080a;color:#d8dde5;font-family:var(--mono);font-size:13px;
+  box-shadow:0 0 0 1px #000,0 0 0 4px #1b1c1f,0 10px 30px rgba(0,0,0,.6)}
+#toast.show{opacity:1;transform:translateX(-50%)}
+#start{position:fixed;inset:0;z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;text-align:center;padding:20px;
+  background:var(--brush),radial-gradient(ellipse at 50% 30%,#26292d,#0b0c0e 70%)}
+#start h1{margin:0;font-size:44px;letter-spacing:.14em;font-weight:800;
+  background:linear-gradient(180deg,#f6f7f9 0%,#9ea3ab 55%,#e3e6ea 100%);-webkit-background-clip:text;background-clip:text;color:transparent;filter:drop-shadow(0 2px 0 rgba(0,0,0,.9))}
+#start p{margin:0;color:var(--dim);line-height:1.8}
+#start .btn{height:52px;padding:0 44px;font-size:17px}
+#start.hide{display:none}
+#start .err{color:var(--bad)}
+#resume{position:fixed;inset:0;z-index:190;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center}
+#resume.show{display:flex}
+input[type=file]{display:none}
+.bpmpop{position:absolute;z-index:40;border-radius:6px;padding:10px;display:none;width:280px;background:var(--metal);box-shadow:var(--bevel),0 14px 40px rgba(0,0,0,.7)}
+.bpmpop.show{display:block}
+.bpmpop .g{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:8px}
+.bpmpop .g .btn{padding:0;height:36px}
+.bpmpop .bt{display:flex;justify-content:space-between;align-items:center;font-weight:600;font-family:var(--mono);font-size:12.5px}
+.bpmpop .hint{font-size:11px;color:var(--dim);margin-top:8px;line-height:1.5}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo">分轨 DJ</div>
+    <button class="btn" id="btnLib">♫ 曲库</button>
+    <button class="btn" id="btnAm">⟳ 自动混音</button>
+    <button class="btn" id="btnAmNext" disabled>⏭ 下一首</button>
+    <div class="am-status" id="amStatus"></div>
+    <div class="spacer"></div>
+    <div class="master"><span>主音量</span><div id="masterFader"></div><div class="mmeter" id="masterMeter"><i></i></div></div>
+  </header>
+
+  <section class="waves" id="waves">
+    <canvas id="waveCanvas"></canvas>
+    <div class="lane-info lane-a"><span class="tag">A</span><span class="lt" id="laneA">—</span><span class="lr num" id="laneAr"></span></div>
+    <div class="lane-info lane-b"><span class="tag">B</span><span class="lt" id="laneB">—</span><span class="lr num" id="laneBr"></span></div>
+    <div class="zoom"><button class="btn" id="zoomIn">＋</button><button class="btn" id="zoomOut">－</button></div>
+  </section>
+
+  <main id="main">
+    <section class="deck a" id="deckA"></section>
+    <section class="mixer" id="mixer">
+      <div class="mstrips" id="mstrips"></div>
+      <div class="xfade"><span class="tag" style="color:var(--a)">A</span><div id="xfader"></div><span class="tag" style="color:var(--b)">B</span></div>
+    </section>
+    <section class="deck b" id="deckB"></section>
+
+    <div class="sheet" id="sheet">
+      <div class="shead">
+        <div class="tabs" id="sheetTabs"><button data-t="lib" class="on">曲库</button><button data-t="am">自动混音列表</button></div>
+        <input class="search" id="search" placeholder="搜索歌名" autocomplete="off">
+        <div class="spacer"></div>
+        <label class="btn primary" id="btnImport">＋ 导入音频<input type="file" id="fileIn" multiple accept=".wav,.mp3,.flac,.m4a,.aac,.aif,.aiff,audio/*"></label>
+        <button class="btn" id="sheetClose">收起</button>
+      </div>
+      <div class="sbody" id="sbody"></div>
+      <div class="sfoot" id="sfoot"></div>
+    </div>
+    <div class="bpmpop" id="bpmpop"></div>
+  </main>
+</div>
+
+<div id="modal"><div class="mbox"></div></div>
+<div id="toast"></div>
+<div id="resume"><button class="btn primary" style="height:54px;padding:0 30px;font-size:17px">点一下恢复声音</button></div>
+<div id="start">
+  <h1>分轨 DJ</h1>
+  <p>双唱盘混音 · 多音轨推子 · 自动混音<br>建议横屏使用。第一次用请先在「曲库」里导入音频。</p>
+  <button class="btn primary" id="startBtn">开始</button>
+  <p class="err" id="startErr"></p>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
